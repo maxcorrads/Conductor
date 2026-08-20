@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "sol_session": "sol",
+  "worker_session_pattern": "^luna-[1-9][0-9]*$",
+  "tmux_command": "tmux",
+  "delivery_delay_ms": 180,
+  "inline_goal_max_chars": 3500,
+  "terminal_goal_statuses": [
+    "complete",
+    "blocked"
+  ],
+  "transcript_tail_bytes": 33554432
+}

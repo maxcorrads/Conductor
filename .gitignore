@@ -1,0 +1,8 @@
+.DS_Store
+/dist/conductor-*
+/dist/CHECKSUMS.txt
+/build/
+/release/
+/coverage.out
+*.test
+*.prof
