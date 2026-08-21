@@ -35,6 +35,8 @@ if [ "$BUILD_FROM_SOURCE" = "1" ] || [ ! -x "$SOURCE" ]; then
     )
   else
     echo "Missing $SOURCE and Go is not installed." >&2
+    echo "A source checkout does not contain prebuilt binaries." >&2
+    echo "Download and extract a GitHub Release archive, or install Go 1.22+ and retry." >&2
     exit 1
   fi
 fi

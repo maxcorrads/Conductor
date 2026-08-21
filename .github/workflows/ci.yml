@@ -24,12 +24,12 @@ jobs:
         run: make vet
       - name: Race detector
         run: make race
-      - name: Cross-build macOS binaries
-        run: make dist checksums
+      - name: Build and verify macOS release archive
+        run: make verify-package
       - uses: actions/upload-artifact@v7
         with:
-          name: conductor-macos
+          name: conductor-release
           path: |
-            dist/conductor-darwin-arm64
-            dist/conductor-darwin-amd64
-            dist/CHECKSUMS.txt
+            release/conductor-v*.zip
+            release/conductor-v*.zip.sha256
+          if-no-files-found: error

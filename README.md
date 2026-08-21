@@ -76,6 +76,11 @@ Go is needed only to build from source. The release archive includes prebuilt ma
 
 ## Install
 
+Download and extract the archive for the desired version from
+[GitHub Releases](https://github.com/maxcorrads/Conductor/releases). A source
+checkout does not include prebuilt binaries and therefore requires Go 1.22 or
+newer.
+
 From the extracted release directory:
 
 ```bash
