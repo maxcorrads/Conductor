@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,6 +211,52 @@ func TestPaneShowsActiveTurnUsesInterruptMarker(t *testing.T) {
 	}
 	if !paneShowsActiveTurn("Working (2s • esc to cancel)") {
 		t.Fatal("active cancel marker was not detected")
+	}
+}
+
+func TestPaneShowsActiveTurnUsesLatestLifecycleMarker(t *testing.T) {
+	idle := strings.Join([]string{
+		"• Working (28s • esc to interrupt)",
+		"• Received: worker started; now waiting without polling.",
+		"— Worked for 1m 03s —",
+		"› Ask Codex to do anything",
+	}, "\n")
+	if paneShowsActiveTurn(idle) {
+		t.Fatal("a completed turn was reported busy because an older Working marker remained in scrollback")
+	}
+
+	paused := "• Working (2s • esc to interrupt)\n• Goal paused Objective: wait for handoffs"
+	if paneShowsActiveTurn(paused) {
+		t.Fatal("a paused goal was reported as an active turn")
+	}
+
+	restarted := "— Worked for 1m 03s —\n• Working (2s • esc to interrupt)"
+	if !paneShowsActiveTurn(restarted) {
+		t.Fatal("a newer active turn did not override an older completion marker")
+	}
+}
+
+func TestPaneShowsEmptyComposerUsesLatestComposerLine(t *testing.T) {
+	if !paneShowsEmptyComposer("— Worked for 3s —\n› Ask Codex to do anything") {
+		t.Fatal("empty composer was not detected")
+	}
+	if paneShowsEmptyComposer("› Ask Codex to do anything\n› unsent draft") {
+		t.Fatal("older empty composer hid a newer unsent draft")
+	}
+	if paneShowsEmptyComposer("• Working (2s • esc to interrupt)") {
+		t.Fatal("active pane was reported as an empty composer")
+	}
+}
+
+func TestBrainSetupRequiresIdleEmptyComposer(t *testing.T) {
+	if err := validateBrainSetupPane("• Working (2s • esc to interrupt)\n› Ask Codex to do anything"); err == nil {
+		t.Fatal("active Brain accepted a setup prompt")
+	}
+	if err := validateBrainSetupPane("— Worked for 3s —\n› unsent draft"); err == nil {
+		t.Fatal("Brain with an unsent draft accepted a setup prompt")
+	}
+	if err := validateBrainSetupPane("— Worked for 3s —\n› Ask Codex to do anything"); err != nil {
+		t.Fatalf("idle Brain with empty composer rejected: %v", err)
 	}
 }
 

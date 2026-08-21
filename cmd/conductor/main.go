@@ -21,7 +21,7 @@ import (
 	"github.com/maxcorrads/conductor/internal/state"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "hook" {
@@ -84,6 +84,8 @@ func run(args []string) error {
 		return nil
 	case "goal":
 		return runGoal(a, args[1:])
+	case "brain":
+		return runBrain(a, args[1:])
 	case "status":
 		return runStatus(a, args[1:])
 	case "inbox":
@@ -105,6 +107,57 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q (run conductor help)", args[0])
 	}
+}
+
+func runBrain(a *app.App, args []string) error {
+	if len(args) == 0 || args[0] != "setup" {
+		return errors.New("usage: conductor brain setup [--stdin | --file PATH | PROMPT]")
+	}
+	prompt, err := parsePayload(args[1:])
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return errors.New("setup prompt cannot be empty")
+	}
+	pane, err := a.Tmux.ResolvePane(a.BrainSession)
+	if err != nil {
+		return err
+	}
+	content, err := captureCodexPane(a.Config.TmuxCommand, pane.ID)
+	if err != nil {
+		return err
+	}
+	if err := validateBrainSetupPane(content); err != nil {
+		return err
+	}
+	if err := a.Tmux.SendPrompt(pane.ID, prompt); err != nil {
+		return err
+	}
+	fmt.Printf("Setup prompt sent to Brain for %s.\n", a.ProjectID)
+	return nil
+}
+
+func validateBrainSetupPane(content string) error {
+	if paneShowsActiveTurn(content) {
+		return errors.New("Brain is working; setup prompt was not sent")
+	}
+	if !paneShowsEmptyComposer(content) {
+		return errors.New("Brain composer is not empty; setup prompt was not sent")
+	}
+	return nil
+}
+
+func captureCodexPane(tmuxCommand, pane string) (string, error) {
+	output, err := exec.Command(tmuxCommand, "capture-pane", "-p", "-J", "-t", pane, "-S", "-30").CombinedOutput()
+	if err == nil {
+		return string(output), nil
+	}
+	fallback, fallbackErr := exec.Command(tmuxCommand, "capture-pane", "-p", "-t", pane, "-S", "-30").CombinedOutput()
+	if fallbackErr != nil {
+		return "", fmt.Errorf("capture Brain pane: %w: %s", fallbackErr, strings.TrimSpace(string(fallback)))
+	}
+	return string(fallback), nil
 }
 
 func runGoal(a *app.App, args []string) error {
@@ -665,7 +718,7 @@ func runProject(args []string) error {
 		return listProjects()
 	}
 	if len(args) < 2 {
-		return errors.New("usage: conductor project list|init|sessions [NAME]")
+		return errors.New("usage: conductor project list|init|sessions|delete [NAME]")
 	}
 	switch args[1] {
 	case "list":
@@ -695,6 +748,30 @@ func runProject(args []string) error {
 			return err
 		}
 		printProjectSessions(a)
+		return nil
+	case "delete":
+		if len(args) != 4 || args[3] != "--yes" {
+			return errors.New("usage: conductor project delete NAME --yes")
+		}
+		projectID, err := project.NormalizeID(args[2])
+		if err != nil {
+			return err
+		}
+		ids, err := app.DiscoverProjectIDs()
+		if err != nil {
+			return err
+		}
+		if !contains(ids, projectID) {
+			return fmt.Errorf("project %q is not initialized", projectID)
+		}
+		a, err := app.NewForProject(projectID)
+		if err != nil {
+			return err
+		}
+		if err := a.DeleteProject(); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted Conductor project %s. Workspaces and tmux sessions were not changed.\n", a.ProjectID)
 		return nil
 	default:
 		return fmt.Errorf("unknown project command %q", args[1])
@@ -775,6 +852,7 @@ func printUsage(w io.Writer) {
 Usage:
   conductor [--project NAME] init
   conductor goal <worker-N> [--stdin | --file PATH | OBJECTIVE]
+  conductor brain setup [--stdin | --file PATH | PROMPT]
   conductor status [--json] [--all]
   conductor inbox [--json]
   conductor finish <worker-N> [--task-id ID] [--stdin | --file PATH] [--status STATUS]
@@ -787,6 +865,7 @@ Usage:
   conductor project init NAME
   conductor project list
   conductor project sessions NAME
+  conductor project delete NAME --yes
   conductor version
 
 Project session convention:

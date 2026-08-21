@@ -24,6 +24,10 @@ enum TerminalKind: String, CaseIterable, Identifiable {
     var isInstalled: Bool {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
     }
+
+    var isRunning: Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
+    }
 }
 
 enum TerminalLauncher {
@@ -55,7 +59,7 @@ enum TerminalLauncher {
             tmuxExecutable: tmuxExecutable,
             codexOptions: codexOptions
         )
-        try await runAppleScript(terminal: terminal, command: command)
+        _ = try await runAppleScript(launchAppleScript(terminal: terminal, command: command, session: session))
     }
 
     static func terminalCommand(
@@ -75,10 +79,33 @@ enum TerminalLauncher {
         guard let terminal = configuredPriority.first(where: \.isInstalled) else {
             throw ConductorError.commandFailed("No supported terminal is installed. Enable Terminal or install iTerm2.")
         }
-        try await runAppleScript(
-            terminal: terminal,
-            command: attachTerminalCommand(session: session, workspace: workspace, tmuxExecutable: tmuxExecutable)
+        _ = try await runAppleScript(
+            launchAppleScript(
+                terminal: terminal,
+                command: attachTerminalCommand(session: session, workspace: workspace, tmuxExecutable: tmuxExecutable),
+                session: session
+            )
         )
+    }
+
+    static func focus(session: String) async throws {
+        let running = configuredPriority.filter(\.isRunning)
+        guard !running.isEmpty else {
+            throw ConductorError.commandFailed("No supported terminal is currently open.")
+        }
+        var lastError: Error?
+        for terminal in running {
+            do {
+                let result = try await runAppleScript(focusAppleScript(terminal: terminal, session: session))
+                if result.trimmingCharacters(in: .whitespacesAndNewlines) == "focused" {
+                    return
+                }
+            } catch {
+                lastError = error
+            }
+        }
+        if let lastError { throw lastError }
+        throw ConductorError.commandFailed("No open terminal was found for tmux session \(session). Nothing was opened.")
     }
 
     static func attachTerminalCommand(session: String, workspace: String?, tmuxExecutable: String) -> String {
@@ -110,30 +137,94 @@ enum TerminalLauncher {
         }
     }
 
-    private static func runAppleScript(terminal: TerminalKind, command: String) async throws {
+    static func launchAppleScript(terminal: TerminalKind, command: String, session: String) -> String {
+        let escapedCommand = appleScriptQuote(applicationCommand(for: terminal, shellCommand: command))
+        let title = appleScriptQuote("Conductor · \(session)")
+        switch terminal {
+        case .terminal:
+            return """
+            tell application id "com.apple.Terminal"
+                activate
+                set targetTab to do script "\(escapedCommand)"
+                try
+                    set custom title of targetTab to "\(title)"
+                end try
+            end tell
+            """
+        case .iterm:
+            return """
+            tell application id "com.googlecode.iterm2"
+                activate
+                set targetWindow to create window with default profile command "\(escapedCommand)"
+                try
+                    set name of current session of targetWindow to "\(title)"
+                end try
+            end tell
+            """
+        }
+    }
+
+    static func focusAppleScript(terminal: TerminalKind, session: String) -> String {
+        let sessionName = appleScriptQuote(session)
+        let title = appleScriptQuote("Conductor · \(session)")
+        switch terminal {
+        case .terminal:
+            return """
+            tell application id "com.apple.Terminal"
+                repeat with terminalWindow in windows
+                    repeat with terminalTab in tabs of terminalWindow
+                        try
+                            if custom title of terminalTab is "\(title)" then
+                                set selected tab of terminalWindow to terminalTab
+                                set index of terminalWindow to 1
+                                activate
+                                return "focused"
+                            end if
+                        end try
+                    end repeat
+                    try
+                        if name of terminalWindow contains "\(sessionName)" then
+                            set index of terminalWindow to 1
+                            activate
+                            return "focused"
+                        end if
+                    end try
+                end repeat
+            end tell
+            return "not-found"
+            """
+        case .iterm:
+            return """
+            tell application id "com.googlecode.iterm2"
+                repeat with terminalWindow in windows
+                    repeat with terminalTab in tabs of terminalWindow
+                        repeat with terminalSession in sessions of terminalTab
+                            try
+                                if name of terminalSession is "\(title)" or name of terminalSession contains "\(sessionName)" then
+                                    select terminalWindow
+                                    select terminalTab
+                                    select terminalSession
+                                    activate
+                                    return "focused"
+                                end if
+                            end try
+                        end repeat
+                    end repeat
+                end repeat
+            end tell
+            return "not-found"
+            """
+        }
+    }
+
+    private static func runAppleScript(_ script: String) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
-            let escaped = appleScriptQuote(applicationCommand(for: terminal, shellCommand: command))
-            let script: String
-            switch terminal {
-            case .terminal:
-                script = """
-                tell application id "com.apple.Terminal"
-                    activate
-                    do script "\(escaped)"
-                end tell
-                """
-            case .iterm:
-                script = """
-                tell application id "com.googlecode.iterm2"
-                    activate
-                    create window with default profile command "\(escaped)"
-                end tell
-                """
-            }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             process.arguments = ["-e", script]
+            let outputPipe = Pipe()
             let errorPipe = Pipe()
+            process.standardOutput = outputPipe
             process.standardError = errorPipe
             try process.run()
             process.waitUntilExit()
@@ -142,6 +233,7 @@ enum TerminalLauncher {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 throw ConductorError.commandFailed(message.isEmpty ? "The terminal could not be opened." : message)
             }
+            return String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         }.value
     }
 }

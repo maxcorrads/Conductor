@@ -41,7 +41,7 @@ struct ConductorMacApp: App {
     private var menuBarIcon: String {
         let sessions = Set(model.snapshot?.tmuxSessions ?? [])
         let busy = model.snapshot?.projects.contains { project in
-            project.state.brain.busy || project.workers(
+            project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:]) || project.workers(
                 connectedSessions: sessions,
                 sessionActivity: model.snapshot?.sessionActivity ?? [:]
             ).contains { $0.connected && $0.busy }

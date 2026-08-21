@@ -98,7 +98,7 @@ final class ModelsTests: XCTestCase {
             "state": {
               "version": 2,
               "project_id": "empty",
-              "brain": {"session": "empty--brain", "busy": false},
+              "brain": {"session": "empty--brain", "cwd": "/repo/brain-workspace", "busy": true},
               "workers": {},
               "tasks": {},
               "deliveries": {}
@@ -118,7 +118,53 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.projects.first?.taskOrder, [])
         XCTAssertEqual(snapshot.projects.first?.handoffOrder, [])
         XCTAssertEqual(snapshot.projects.first?.goalTextTruncated["task"], true)
+        XCTAssertEqual(snapshot.projects.first?.brainWorkspace, "/repo/brain-workspace")
+        XCTAssertEqual(snapshot.projects.first?.brainBusy(sessionActivity: ["empty--brain": false]), false)
+        XCTAssertEqual(snapshot.projects.first?.brainBusy(sessionActivity: [:]), true)
         XCTAssertEqual(snapshot.projects.first?.handoffMessageTruncated["handoff"], true)
+    }
+
+    func testBrainSetupPromptIncludesIdentityWorkspaceAndConnectedWorkers() throws {
+        let json = #"""
+        {
+          "id": "demo",
+          "brain_session": "demo--brain",
+          "state_path": "/tmp/conductor/projects/demo/state.json",
+          "log_path": "/tmp/conductor/projects/demo/log",
+          "worker_sessions": ["demo--worker-1", "demo--worker-2"],
+          "worker_session_template": "demo--worker-%d",
+          "task_count": 0,
+          "handoff_count": 0,
+          "history_truncated": false,
+          "state": {
+            "version": 2,
+            "project_id": "demo",
+            "brain": {"session": "demo--brain", "cwd": "/repo/demo", "busy": false},
+            "workers": {
+              "demo--worker-1": {"session": "demo--worker-1", "cwd": "/repo/demo-worker-1", "busy": false},
+              "demo--worker-2": {"session": "demo--worker-2", "cwd": "/repo/demo-worker-2", "busy": false}
+            },
+            "tasks": {},
+            "deliveries": {}
+          },
+          "task_order": [],
+          "handoff_order": [],
+          "goal_texts": {},
+          "goal_text_truncated": {},
+          "handoff_messages": {},
+          "handoff_message_truncated": {},
+          "log_tail": ""
+        }
+        """#
+        let project = try conductorDecoder().decode(ProjectSnapshot.self, from: Data(json.utf8))
+        let prompt = project.brainSetupPrompt(connectedSessions: ["demo--brain", "demo--worker-1"])
+        XCTAssertTrue(prompt.contains("You are the Brain for the Conductor project \"demo\"."))
+        XCTAssertTrue(prompt.contains("- tmux session: demo--brain"))
+        XCTAssertTrue(prompt.contains("- workspace: /repo/demo"))
+        XCTAssertTrue(prompt.contains("- worker-1\n  tmux session: demo--worker-1\n  workspace: /repo/demo-worker-1"))
+        XCTAssertFalse(prompt.contains("- worker-2\n"))
+        XCTAssertTrue(prompt.contains("conductor goal worker-1 --stdin"))
+        XCTAssertTrue(prompt.contains("Do not poll Workers after delegation"))
     }
 
     func testProjectIDNormalizationAndValidation() {

@@ -414,11 +414,43 @@ func conductorSessions(sessions []string, cfg config.Config) []string {
 }
 
 func paneShowsActiveTurn(content string) bool {
+	busy := false
 	for _, line := range strings.Split(strings.ToLower(content), "\n") {
-		line = strings.TrimSpace(line)
+		line = codexStatusLine(line)
 		working := strings.HasPrefix(line, "• working") || strings.HasPrefix(line, "working")
 		if working && (strings.Contains(line, "esc to interrupt") || strings.Contains(line, "esc to cancel")) {
-			return true
+			busy = true
+			continue
+		}
+		if strings.HasPrefix(line, "worked for") ||
+			strings.HasPrefix(line, "goal paused") ||
+			strings.HasPrefix(line, "goal stalled") ||
+			strings.HasPrefix(line, "conversation interrupted") {
+			busy = false
+		}
+	}
+	return busy
+}
+
+func codexStatusLine(line string) string {
+	line = strings.TrimSpace(line)
+	for _, prefix := range []string{"•", "—", "■", "▪", "●"} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return line
+}
+
+func paneShowsEmptyComposer(content string) bool {
+	lines := strings.Split(strings.ToLower(content), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := strings.TrimSpace(lines[index])
+		for _, prefix := range []string{"›", "❯", ">"} {
+			if strings.HasPrefix(line, prefix) {
+				composer := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				return composer == "ask codex to do anything"
+			}
 		}
 	}
 	return false
