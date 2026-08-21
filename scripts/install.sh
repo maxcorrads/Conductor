@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${VERSION:-0.2.0}
+VERSION=${VERSION:-0.2.1}
 BIN_DIR=${CONDUCTOR_BIN_DIR:-"$HOME/.local/bin"}
 DEST="$BIN_DIR/conductor"
 

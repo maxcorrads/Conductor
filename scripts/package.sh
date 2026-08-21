@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${VERSION:-0.2.0}
+VERSION=${VERSION:-0.2.1}
 NAME="conductor-v$VERSION"
 STAGE="$ROOT/release/$NAME"
 ARCHIVE="$ROOT/release/$NAME.zip"
