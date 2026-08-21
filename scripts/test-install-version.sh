@@ -12,7 +12,11 @@ printf '%s\n' '#!/bin/sh' 'case "$1" in' '  -s) echo Darwin ;;' '  -m) echo arm6
 printf '%s\n' '#!/bin/sh' 'test "${1:-}" = version' 'echo conductor 0.3.1' > "$TEST_ROOT/package/dist/conductor-darwin-arm64"
 chmod 0755 "$TEST_ROOT/fake-bin/uname" "$TEST_ROOT/package/dist/conductor-darwin-arm64"
 
-actual=$(PATH="$TEST_ROOT/fake-bin:$PATH" HOME="$TEST_ROOT/home" "$TEST_ROOT/package/scripts/install.sh" --check-version)
+actual=$(
+  unset VERSION
+  PATH="$TEST_ROOT/fake-bin:$PATH" HOME="$TEST_ROOT/home" \
+    "$TEST_ROOT/package/scripts/install.sh" --check-version
+)
 test "$actual" = "0.3.1"
 
 if PATH="$TEST_ROOT/fake-bin:$PATH" HOME="$TEST_ROOT/home" VERSION=0.3.0 "$TEST_ROOT/package/scripts/install.sh" --check-version >/dev/null 2>&1; then
