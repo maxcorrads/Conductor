@@ -2,6 +2,22 @@
 
 All notable changes to Conductor are documented here.
 
+## 0.2.1 — 2026-08-21
+
+### Added
+
+- Verified installable macOS archives in CI and automatic GitHub Release
+  publication for version tags.
+
+### Fixed
+
+- Clear stale Codex goals before delegation and handle the bounded
+  **Replace goal?** confirmation path.
+- Recover ambiguous goal-less worker completions with one delayed local
+  reconciliation, without recurring polling or additional model turns.
+- Explain when an installation is running from a source checkout without Go
+  or bundled release binaries.
+
 ## 0.2.0 — 2026-08-20
 
 ### Added
