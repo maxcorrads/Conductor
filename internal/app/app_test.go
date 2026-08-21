@@ -29,6 +29,18 @@ type sentPrompt struct {
 	text   string
 }
 
+type blockingPromptTmux struct {
+	*fakeTmux
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingPromptTmux) SendPrompt(target, prompt string) error {
+	close(f.started)
+	<-f.release
+	return f.fakeTmux.SendPrompt(target, prompt)
+}
+
 func TestDefaultWorkerMatcherNeverClaimsNamedProjectSessions(t *testing.T) {
 	a := &App{
 		ProjectID: "default",
@@ -142,6 +154,72 @@ func testApp(t *testing.T) (*App, *fakeTmux, time.Time) {
 		t.Fatal(err)
 	}
 	return a, fake, clock
+}
+
+func TestSendBrainSetupSerializesAgainstHandoffReservation(t *testing.T) {
+	a, fake, now := testApp(t)
+	blocking := &blockingPromptTmux{fakeTmux: fake, started: make(chan struct{}), release: make(chan struct{})}
+	a.Tmux = blocking
+	if err := a.Store.Update(func(st *state.State) error {
+		st.Deliveries["handoff-1"] = &state.Delivery{ID: "handoff-1", Status: state.DeliveryPending, CreatedAt: now}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	setupDone := make(chan error, 1)
+	go func() {
+		setupDone <- a.SendBrainSetup("Coordinate this project.", func(pane tmux.Pane) error { return nil })
+	}()
+	<-blocking.started
+
+	reservationDone := make(chan error, 1)
+	go func() {
+		reservationDone <- a.Store.Update(func(st *state.State) error {
+			reserveOldestDelivery(st, now.Add(time.Minute))
+			return nil
+		})
+	}()
+	select {
+	case err := <-reservationDone:
+		t.Fatalf("handoff reservation entered while setup paste held the state lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	if err := <-setupDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-reservationDone; err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Brain.Busy || st.Brain.ReservedDelivery != "" || st.Deliveries["handoff-1"].Status != state.DeliveryPending {
+		t.Fatalf("handoff raced setup dispatch: brain=%+v delivery=%+v", st.Brain, st.Deliveries["handoff-1"])
+	}
+}
+
+func TestSendBrainSetupRejectsReservedHandoffBeforeValidation(t *testing.T) {
+	a, fake, now := testApp(t)
+	if err := a.Store.Update(func(st *state.State) error {
+		st.Brain.ReservedDelivery = "handoff-1"
+		st.Brain.Busy = true
+		st.Deliveries["handoff-1"] = &state.Delivery{ID: "handoff-1", Status: state.DeliverySending, CreatedAt: now}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	validated := false
+	err := a.SendBrainSetup("Coordinate this project.", func(pane tmux.Pane) error {
+		validated = true
+		return nil
+	})
+	if err == nil || validated || len(fake.prompts()) != 0 {
+		t.Fatalf("reserved handoff did not block setup: err=%v validated=%v prompts=%+v", err, validated, fake.prompts())
+	}
 }
 
 func TestDelegateSendsExactInlineObjective(t *testing.T) {

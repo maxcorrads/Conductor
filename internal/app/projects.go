@@ -20,6 +20,9 @@ func (a *App) DeleteProject() error {
 	if a.ProjectID == project.DefaultID {
 		return errors.New("the default project cannot be deleted")
 	}
+	if err := validateProjectDeletePath(a.BasePaths.ProjectsDir, a.Paths.Home); err != nil {
+		return err
+	}
 	if _, err := os.Stat(a.Paths.State); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("project %q is not initialized", a.ProjectID)
 	} else if err != nil {
@@ -37,12 +40,34 @@ func (a *App) DeleteProject() error {
 		}
 	}
 
-	relative, err := filepath.Rel(a.BasePaths.ProjectsDir, a.Paths.Home)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return fmt.Errorf("refusing to delete unsafe project path %q", a.Paths.Home)
-	}
 	if err := os.RemoveAll(a.Paths.Home); err != nil {
 		return fmt.Errorf("delete project %q: %w", a.ProjectID, err)
+	}
+	return nil
+}
+
+func validateProjectDeletePath(projectsDir, projectHome string) error {
+	for _, path := range []string{projectsDir, projectHome} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect project delete path %q: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to delete through symlinked project path %q", path)
+		}
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(projectsDir)
+	if err != nil {
+		return fmt.Errorf("resolve projects directory %q: %w", projectsDir, err)
+	}
+	resolvedHome, err := filepath.EvalSymlinks(projectHome)
+	if err != nil {
+		return fmt.Errorf("resolve project directory %q: %w", projectHome, err)
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolvedHome)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || strings.Contains(relative, string(os.PathSeparator)) {
+		return fmt.Errorf("refusing to delete unsafe project path %q", projectHome)
 	}
 	return nil
 }

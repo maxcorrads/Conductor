@@ -73,6 +73,69 @@ func TestDeleteProjectRefusesDefaultAndConnectedSessions(t *testing.T) {
 	}
 }
 
+func TestDeleteProjectRefusesSymlinkedProjectDirectory(t *testing.T) {
+	base := t.TempDir()
+	projectsDir := filepath.Join(base, "projects")
+	if err := os.MkdirAll(projectsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(base, "external-project")
+	if err := os.MkdirAll(external, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(external, "state.json")
+	if err := os.WriteFile(statePath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectHome := filepath.Join(projectsDir, "demo")
+	if err := os.Symlink(external, projectHome); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{
+		ProjectID: "demo",
+		BasePaths: config.Paths{ProjectsDir: projectsDir},
+		Paths:     config.Paths{Home: projectHome, State: filepath.Join(projectHome, "state.json")},
+		Config:    config.Default(),
+		Tmux:      &fakeTmux{panes: map[string]tmux.Pane{}},
+	}
+	if err := a.DeleteProject(); err == nil {
+		t.Fatal("symlinked project directory deletion unexpectedly succeeded")
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("external project state was changed: %v", err)
+	}
+}
+
+func TestDeleteProjectRefusesSymlinkedProjectsRoot(t *testing.T) {
+	base := t.TempDir()
+	externalRoot := filepath.Join(base, "external-projects")
+	projectHome := filepath.Join(externalRoot, "demo")
+	if err := os.MkdirAll(projectHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(projectHome, "state.json")
+	if err := os.WriteFile(statePath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectsDir := filepath.Join(base, "projects")
+	if err := os.Symlink(externalRoot, projectsDir); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{
+		ProjectID: "demo",
+		BasePaths: config.Paths{ProjectsDir: projectsDir},
+		Paths:     config.Paths{Home: filepath.Join(projectsDir, "demo"), State: filepath.Join(projectsDir, "demo", "state.json")},
+		Config:    config.Default(),
+		Tmux:      &fakeTmux{panes: map[string]tmux.Pane{}},
+	}
+	if err := a.DeleteProject(); err == nil {
+		t.Fatal("symlinked projects root deletion unexpectedly succeeded")
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("external projects root was changed: %v", err)
+	}
+}
+
 func TestNewForHookFindsNamedProjectByCodexSessionID(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CONDUCTOR_HOME", home)

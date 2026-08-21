@@ -19,6 +19,7 @@ import (
 	"github.com/maxcorrads/conductor/internal/hookinstall"
 	"github.com/maxcorrads/conductor/internal/project"
 	"github.com/maxcorrads/conductor/internal/state"
+	"github.com/maxcorrads/conductor/internal/tmux"
 )
 
 var version = "0.4.0"
@@ -120,18 +121,13 @@ func runBrain(a *app.App, args []string) error {
 	if strings.TrimSpace(prompt) == "" {
 		return errors.New("setup prompt cannot be empty")
 	}
-	pane, err := a.Tmux.ResolvePane(a.BrainSession)
-	if err != nil {
-		return err
-	}
-	content, err := captureCodexPane(a.Config.TmuxCommand, pane.ID)
-	if err != nil {
-		return err
-	}
-	if err := validateBrainSetupPane(content); err != nil {
-		return err
-	}
-	if err := a.Tmux.SendPrompt(pane.ID, prompt); err != nil {
+	if err := a.SendBrainSetup(prompt, func(pane tmux.Pane) error {
+		content, captureErr := captureCodexPane(a.Config.TmuxCommand, pane.ID)
+		if captureErr != nil {
+			return captureErr
+		}
+		return validateBrainSetupPane(content)
+	}); err != nil {
 		return err
 	}
 	fmt.Printf("Setup prompt sent to Brain for %s.\n", a.ProjectID)

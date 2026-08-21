@@ -165,7 +165,6 @@ enum TerminalLauncher {
     }
 
     static func focusAppleScript(terminal: TerminalKind, session: String) -> String {
-        let sessionName = appleScriptQuote(session)
         let title = appleScriptQuote("Conductor · \(session)")
         switch terminal {
         case .terminal:
@@ -182,13 +181,6 @@ enum TerminalLauncher {
                             end if
                         end try
                     end repeat
-                    try
-                        if name of terminalWindow contains "\(sessionName)" then
-                            set index of terminalWindow to 1
-                            activate
-                            return "focused"
-                        end if
-                    end try
                 end repeat
             end tell
             return "not-found"
@@ -200,7 +192,7 @@ enum TerminalLauncher {
                     repeat with terminalTab in tabs of terminalWindow
                         repeat with terminalSession in sessions of terminalTab
                             try
-                                if name of terminalSession is "\(title)" or name of terminalSession contains "\(sessionName)" then
+                                if name of terminalSession is "\(title)" then
                                     select terminalWindow
                                     select terminalTab
                                     select terminalSession
