@@ -88,15 +88,18 @@ enum TerminalLauncher {
         )
     }
 
-    static func focus(session: String) async throws {
+    static func focus(session: String, tmuxExecutable: String) async throws {
         let running = configuredPriority.filter(\.isRunning)
         guard !running.isEmpty else {
             throw ConductorError.commandFailed("No supported terminal is currently open.")
         }
+        let clientTTYs = await tmuxClientTTYs(session: session, tmuxExecutable: tmuxExecutable)
         var lastError: Error?
         for terminal in running {
             do {
-                let result = try await runAppleScript(focusAppleScript(terminal: terminal, session: session))
+                let result = try await runAppleScript(
+                    focusAppleScript(terminal: terminal, session: session, clientTTYs: clientTTYs)
+                )
                 if result.trimmingCharacters(in: .whitespacesAndNewlines) == "focused" {
                     return
                 }
@@ -164,16 +167,19 @@ enum TerminalLauncher {
         }
     }
 
-    static func focusAppleScript(terminal: TerminalKind, session: String) -> String {
+    static func focusAppleScript(terminal: TerminalKind, session: String, clientTTYs: [String] = []) -> String {
         let title = appleScriptQuote("Conductor · \(session)")
+        let ttys = clientTTYs.map { "\"\(appleScriptQuote($0))\"" }.joined(separator: ", ")
+        let targetTTYs = "{\(ttys)}"
         switch terminal {
         case .terminal:
             return """
             tell application id "com.apple.Terminal"
+                set targetTTYs to \(targetTTYs)
                 repeat with terminalWindow in windows
                     repeat with terminalTab in tabs of terminalWindow
                         try
-                            if custom title of terminalTab is "\(title)" then
+                            if custom title of terminalTab is "\(title)" or targetTTYs contains (tty of terminalTab) then
                                 set selected tab of terminalWindow to terminalTab
                                 set index of terminalWindow to 1
                                 activate
@@ -188,11 +194,12 @@ enum TerminalLauncher {
         case .iterm:
             return """
             tell application id "com.googlecode.iterm2"
+                set targetTTYs to \(targetTTYs)
                 repeat with terminalWindow in windows
                     repeat with terminalTab in tabs of terminalWindow
                         repeat with terminalSession in sessions of terminalTab
                             try
-                                if name of terminalSession is "\(title)" then
+                                if name of terminalSession is "\(title)" or targetTTYs contains (tty of terminalSession) then
                                     select terminalWindow
                                     select terminalTab
                                     select terminalSession
@@ -207,6 +214,40 @@ enum TerminalLauncher {
             return "not-found"
             """
         }
+    }
+
+    static func parseTmuxClientTTYs(_ output: String, session: String) -> [String] {
+        output.split(whereSeparator: \.isNewline).compactMap { row in
+            let fields = row.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2, String(fields[1]) == session else { return nil }
+            let tty = String(fields[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return tty.isEmpty ? nil : tty
+        }
+    }
+
+    private static func tmuxClientTTYs(session: String, tmuxExecutable: String) async -> [String] {
+        await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            let outputPipe = Pipe()
+            if tmuxExecutable.hasPrefix("/") {
+                process.executableURL = URL(fileURLWithPath: tmuxExecutable)
+                process.arguments = ["list-clients", "-F", "#{client_tty}\t#{session_name}"]
+            } else {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                process.arguments = [tmuxExecutable, "list-clients", "-F", "#{client_tty}\t#{session_name}"]
+            }
+            process.standardOutput = outputPipe
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return [] }
+                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                return parseTmuxClientTTYs(String(decoding: data, as: UTF8.self), session: session)
+            } catch {
+                return []
+            }
+        }.value
     }
 
     private static func runAppleScript(_ script: String) async throws -> String {

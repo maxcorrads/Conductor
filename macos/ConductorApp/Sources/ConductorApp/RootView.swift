@@ -116,7 +116,10 @@ struct RootView: View {
     private func focusTerminal(session: String) {
         Task {
             do {
-                try await TerminalLauncher.focus(session: session)
+                try await TerminalLauncher.focus(
+                    session: session,
+                    tmuxExecutable: model.snapshot?.tmuxExecutable ?? "tmux"
+                )
             } catch {
                 await MainActor.run { model.lastError = error.localizedDescription }
             }
@@ -386,7 +389,10 @@ struct ControlRoomView: View {
     private func focusTerminal(session: String) {
         Task {
             do {
-                try await TerminalLauncher.focus(session: session)
+                try await TerminalLauncher.focus(
+                    session: session,
+                    tmuxExecutable: model.snapshot?.tmuxExecutable ?? "tmux"
+                )
             } catch {
                 await MainActor.run { model.lastError = error.localizedDescription }
             }

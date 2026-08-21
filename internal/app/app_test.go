@@ -222,6 +222,25 @@ func TestSendBrainSetupRejectsReservedHandoffBeforeValidation(t *testing.T) {
 	}
 }
 
+func TestSendBrainSetupRejectsBusyBrainWithoutTurnID(t *testing.T) {
+	a, fake, _ := testApp(t)
+	if err := a.Store.Update(func(st *state.State) error {
+		st.Brain.Busy = true
+		st.Brain.TurnID = ""
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	validated := false
+	err := a.SendBrainSetup("Second setup prompt.", func(pane tmux.Pane) error {
+		validated = true
+		return nil
+	})
+	if err == nil || validated || len(fake.prompts()) != 0 {
+		t.Fatalf("busy Brain accepted a second setup: err=%v validated=%v prompts=%+v", err, validated, fake.prompts())
+	}
+}
+
 func TestDelegateSendsExactInlineObjective(t *testing.T) {
 	a, fake, _ := testApp(t)
 	objective := "  Investigate without edits.\n\nReturn any handoff structure Brain requested.  "

@@ -127,7 +127,7 @@ func (a *App) SendBrainSetup(prompt string, validate func(tmux.Pane) error) erro
 		if st.Brain.ReservedDelivery != "" {
 			return errors.New("Brain has a reserved handoff; setup prompt was not sent")
 		}
-		if st.Brain.TurnID != "" {
+		if st.Brain.Busy || st.Brain.TurnID != "" {
 			return errors.New("Brain is working; setup prompt was not sent")
 		}
 		pane, err := a.Tmux.ResolvePane(a.BrainSession)
