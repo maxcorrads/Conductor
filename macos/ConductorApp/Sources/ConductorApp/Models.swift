@@ -245,7 +245,7 @@ func normalizedProjectID(_ value: String) -> String {
     value
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased()
-        .split(whereSeparator: \Character.isWhitespace)
+        .split(whereSeparator: { $0.isWhitespace })
         .joined(separator: "-")
 }
 
