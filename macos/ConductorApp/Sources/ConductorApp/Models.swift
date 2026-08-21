@@ -74,6 +74,74 @@ struct ProjectSnapshot: Decodable, Identifiable {
         orderedHandoffs.filter { $0.status == "pending" }
     }
 
+    func brainBusy(sessionActivity: [String: Bool]) -> Bool {
+        sessionActivity[brainSession] ?? state.brain.busy
+    }
+
+    var brainWorkspace: String {
+        state.brain.cwd ?? ""
+    }
+
+    func brainSetupPrompt(
+        connectedSessions: Set<String>,
+        sessionActivity: [String: Bool] = [:]
+    ) -> String {
+        let connectedWorkers = workers(
+            connectedSessions: connectedSessions,
+            sessionActivity: sessionActivity
+        ).filter(\.connected)
+        let exampleWorker = connectedWorkers.first?.alias ?? "worker-N"
+        var lines = [
+            "You are the Brain for the Conductor project \"\(id)\".",
+            "",
+            "IDENTITY",
+            "- Logical role: Brain",
+            "- tmux session: \(brainSession)"
+        ]
+        if !brainWorkspace.isEmpty {
+            lines.append("- workspace: \(brainWorkspace)")
+        }
+        lines += ["", "CONNECTED WORKERS"]
+        if connectedWorkers.isEmpty {
+            lines.append("- None detected")
+        } else {
+            for worker in connectedWorkers {
+                lines += [
+                    "- \(worker.alias)",
+                    "  tmux session: \(worker.session)"
+                ]
+                if !worker.workspace.isEmpty {
+                    lines.append("  workspace: \(worker.workspace)")
+                }
+                lines.append("")
+            }
+            if lines.last?.isEmpty == true {
+                lines.removeLast()
+            }
+        }
+        lines += [
+            "",
+            "Use Conductor for every delegation. Refer to Workers by their logical names,",
+            "such as worker-1, not by their physical tmux session names.",
+            "",
+            "To delegate a goal:",
+            "",
+            "  printf '%s' '<complete goal>' | conductor goal \(exampleWorker) --stdin",
+            "",
+            "Brain responsibilities:",
+            "- Decide how work should be divided and which Worker should receive each goal.",
+            "- Give every Worker a complete, bounded objective with all necessary context.",
+            "- Keep only one active Conductor goal per Worker.",
+            "- Do not type directly into Worker terminals.",
+            "- Do not poll Workers after delegation. Conductor will deliver their final",
+            "  handoffs back to this Brain automatically.",
+            "- Review and integrate Worker results; a Worker handoff is evidence, not an",
+            "  automatic approval.",
+            "- Remain responsible for final decisions, verification, and user communication."
+        ]
+        return lines.joined(separator: "\n")
+    }
+
     func workers(connectedSessions: Set<String>, sessionActivity: [String: Bool] = [:]) -> [WorkerSummary] {
         let sessions = Set(workerSessions)
         return sessions.compactMap { session in

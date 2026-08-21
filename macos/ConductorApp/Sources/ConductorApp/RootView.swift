@@ -9,10 +9,15 @@ struct RootView: View {
     @State private var newWorkerTarget: ProjectActionTarget?
     @State private var brainLaunchTarget: ProjectActionTarget?
     @State private var forceFlushTarget: ProjectActionTarget?
+    @State private var deleteProjectTarget: ProjectActionTarget?
+    @State private var brainSetupTarget: ProjectActionTarget?
 
     var body: some View {
         NavigationSplitView {
-            ProjectSidebar(showNewProject: $showNewProject)
+            ProjectSidebar(
+                showNewProject: $showNewProject,
+                onDeleteProject: { deleteProjectTarget = ProjectActionTarget(projectID: $0.id) }
+            )
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
         } content: {
             if let project = model.selectedProject, let snapshot = model.snapshot {
@@ -23,6 +28,8 @@ struct RootView: View {
                     onGoal: { goalTarget = WorkerActionTarget(projectID: project.id, worker: $0) },
                     onFinish: { finishTarget = WorkerActionTarget(projectID: project.id, worker: $0) },
                     onOpenBrain: { brainLaunchTarget = ProjectActionTarget(projectID: project.id) },
+                    onFocusBrain: { focusTerminal(session: project.brainSession) },
+                    onBrainSetup: { brainSetupTarget = ProjectActionTarget(projectID: project.id) },
                     onNewWorker: { newWorkerTarget = ProjectActionTarget(projectID: project.id) },
                     onForceFlush: { forceFlushTarget = ProjectActionTarget(projectID: project.id) }
                 )
@@ -45,6 +52,7 @@ struct RootView: View {
         .sheet(item: $finishTarget) { FinishSheet(target: $0) }
         .sheet(item: $brainLaunchTarget) { BrainLaunchSheet(projectID: $0.projectID) }
         .sheet(item: $newWorkerTarget) { NewWorkerSheet(projectID: $0.projectID) }
+        .sheet(item: $brainSetupTarget) { BrainSetupSheet(projectID: $0.projectID) }
         .sheet(isPresented: $model.setupNeeded) { SetupView() }
         .confirmationDialog("Force handoff delivery?", isPresented: forceFlushBinding) {
             Button("Force delivery", role: .destructive) {
@@ -55,6 +63,16 @@ struct RootView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Use this only after visually confirming that the Brain is at an empty composer.")
+        }
+        .confirmationDialog("Delete project?", isPresented: deleteProjectBinding, titleVisibility: .visible) {
+            Button("Delete \(deleteProjectTarget?.projectID ?? "project")", role: .destructive) {
+                guard let id = deleteProjectTarget?.projectID else { return }
+                deleteProjectTarget = nil
+                Task { await model.deleteProject(id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes the project’s local Conductor state, goals, handoffs, and logs. It never deletes workspaces or terminal sessions. Close the project’s Brain and Workers before continuing.")
         }
         .alert("Conductor could not complete the action", isPresented: errorBinding) {
             Button("OK") { model.lastError = nil }
@@ -87,11 +105,32 @@ struct RootView: View {
             set: { if !$0 { forceFlushTarget = nil } }
         )
     }
+
+    private var deleteProjectBinding: Binding<Bool> {
+        Binding(
+            get: { deleteProjectTarget != nil },
+            set: { if !$0 { deleteProjectTarget = nil } }
+        )
+    }
+
+    private func focusTerminal(session: String) {
+        Task {
+            do {
+                try await TerminalLauncher.focus(
+                    session: session,
+                    tmuxExecutable: model.snapshot?.tmuxExecutable ?? "tmux"
+                )
+            } catch {
+                await MainActor.run { model.lastError = error.localizedDescription }
+            }
+        }
+    }
 }
 
 struct ProjectSidebar: View {
     @EnvironmentObject private var model: DashboardModel
     @Binding var showNewProject: Bool
+    let onDeleteProject: (ProjectSnapshot) -> Void
 
     var body: some View {
         List(selection: $model.selectedProjectID) {
@@ -100,7 +139,9 @@ struct ProjectSidebar: View {
                     HStack(spacing: 10) {
                         StatusDot(
                             color: brainColor(project),
-                            pulse: brainConnected(project) && project.state.brain.busy
+                            pulse: brainConnected(project) && project.brainBusy(
+                                sessionActivity: model.snapshot?.sessionActivity ?? [:]
+                            )
                         )
                         VStack(alignment: .leading, spacing: 2) {
                             Text(project.id).fontWeight(.medium)
@@ -116,6 +157,18 @@ struct ProjectSidebar: View {
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(ConductorTheme.waiting, in: Capsule())
+                        }
+                        if project.id != "default" {
+                            Menu {
+                                Button("Delete project…", role: .destructive) {
+                                    onDeleteProject(project)
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
                         }
                     }
                     .tag(project.id)
@@ -137,7 +190,7 @@ struct ProjectSidebar: View {
 
     private func projectSummary(_ project: ProjectSnapshot) -> String {
         if !brainConnected(project) { return "Brain offline" }
-        if project.state.brain.busy { return "Brain active" }
+        if project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:]) { return "Brain active" }
         let sessions = Set(model.snapshot?.tmuxSessions ?? [])
         let busy = project.workers(
             connectedSessions: sessions,
@@ -153,7 +206,10 @@ struct ProjectSidebar: View {
     }
 
     private func brainColor(_ project: ProjectSnapshot) -> Color {
-        ConductorTheme.statusColor(connected: brainConnected(project), busy: project.state.brain.busy)
+        ConductorTheme.statusColor(
+            connected: brainConnected(project),
+            busy: project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:])
+        )
     }
 }
 
@@ -165,6 +221,8 @@ struct ControlRoomView: View {
     let onGoal: (WorkerSummary) -> Void
     let onFinish: (WorkerSummary) -> Void
     let onOpenBrain: () -> Void
+    let onFocusBrain: () -> Void
+    let onBrainSetup: () -> Void
     let onNewWorker: () -> Void
     let onForceFlush: () -> Void
 
@@ -172,6 +230,7 @@ struct ControlRoomView: View {
         project.workers(connectedSessions: connectedSessions, sessionActivity: sessionActivity)
     }
     private var brainConnected: Bool { connectedSessions.contains(project.brainSession) }
+    private var brainBusy: Bool { project.brainBusy(sessionActivity: sessionActivity) }
 
     var body: some View {
         ScrollView {
@@ -217,14 +276,20 @@ struct ControlRoomView: View {
                 }
                 Spacer()
                 StatusDot(
-                    color: ConductorTheme.statusColor(connected: brainConnected, busy: project.state.brain.busy),
-                    pulse: brainConnected && project.state.brain.busy
+                    color: ConductorTheme.statusColor(connected: brainConnected, busy: brainBusy),
+                    pulse: brainConnected && brainBusy
                 )
-                Text(brainConnected ? (project.state.brain.busy ? "Active" : "Idle") : "Offline")
+                Text(brainConnected ? (brainBusy ? "Active" : "Idle") : "Offline")
                     .foregroundStyle(.secondary)
+                Button("Focus terminal", systemImage: "viewfinder", action: onFocusBrain)
+                    .labelStyle(.iconOnly)
+                    .help("Focus an existing terminal for this Brain without opening a new one")
+                    .disabled(!brainConnected)
                 Menu {
+                    Button("Brain setup prompt…", systemImage: "doc.on.clipboard", action: onBrainSetup)
+                    Divider()
                     Button("Mark idle") { Task { await model.markIdle(projectID: project.id) } }
-                        .disabled(brainConnected && project.state.brain.busy)
+                        .disabled(brainConnected && brainBusy)
                     Button("Deliver next handoff") { Task { await model.flush(projectID: project.id, force: false) } }
                     Button("Force delivery…", role: .destructive, action: onForceFlush)
                 } label: { Image(systemName: "ellipsis.circle") }
@@ -254,6 +319,8 @@ struct ControlRoomView: View {
                             model.selectedTaskID = worker.activeTask?.id
                         } onOpen: {
                             openTerminal(session: worker.session, workspace: worker.workspace)
+                        } onFocus: {
+                            focusTerminal(session: worker.session)
                         } onGoal: {
                             onGoal(worker)
                         } onFinish: {
@@ -318,6 +385,19 @@ struct ControlRoomView: View {
             catch { await MainActor.run { model.lastError = error.localizedDescription } }
         }
     }
+
+    private func focusTerminal(session: String) {
+        Task {
+            do {
+                try await TerminalLauncher.focus(
+                    session: session,
+                    tmuxExecutable: model.snapshot?.tmuxExecutable ?? "tmux"
+                )
+            } catch {
+                await MainActor.run { model.lastError = error.localizedDescription }
+            }
+        }
+    }
 }
 
 struct WorkerRow: View {
@@ -325,6 +405,7 @@ struct WorkerRow: View {
     let selected: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
+    let onFocus: () -> Void
     let onGoal: () -> Void
     let onFinish: () -> Void
 
@@ -347,9 +428,13 @@ struct WorkerRow: View {
                     .lineLimit(1)
             }
             Spacer()
+            Button("Focus terminal", systemImage: "viewfinder", action: onFocus)
+                .labelStyle(.iconOnly)
+                .help("Focus an existing terminal without opening a new one")
+                .disabled(!worker.connected)
             Button("Terminal", systemImage: "apple.terminal", action: onOpen)
                 .labelStyle(.iconOnly)
-                .help(worker.connected ? "Attach in a real terminal" : "The tmux session is offline")
+                .help(worker.connected ? "Open another real terminal attached to this session" : "The tmux session is offline")
                 .disabled(!worker.connected)
             Button("Goal", systemImage: "paperplane", action: onGoal)
                 .labelStyle(.iconOnly)

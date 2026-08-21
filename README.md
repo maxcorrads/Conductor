@@ -418,6 +418,7 @@ This keeps the persisted objective below the Codex limit without discarding the 
 ```text
 conductor [--project NAME] init
 conductor goal <worker-N> [--stdin | --file PATH | OBJECTIVE]
+conductor brain setup [--stdin | --file PATH | PROMPT]
 conductor status [--json] [--all]
 conductor inbox [--json]
 conductor finish <worker-N> [--task-id ID] [--stdin | --file PATH] [--status STATUS]
@@ -430,6 +431,7 @@ conductor gui snapshot
 conductor project init NAME
 conductor project list
 conductor project sessions NAME
+conductor project delete NAME --yes
 conductor version
 ```
 
@@ -448,6 +450,12 @@ Conductor does not append a handoff schema or relay instruction. Brain owns the 
 
 Only one active Conductor task is allowed per Worker session.
 
+### `brain setup`
+
+Pastes a setup prompt into the selected project's Brain only after confirming
+from the visible tmux pane that Codex is idle and its composer is empty. The
+command never clears or replaces a draft already present in the composer.
+
 ### `status`
 
 Shows the current project's Brain state, recent tasks, workers, errors, and
@@ -460,7 +468,10 @@ pending handoffs. `--json` exposes that project's full local state;
   session convention;
 - `project list` lists initialized projects and Brain sessions;
 - `project sessions NAME` prints the expected Brain/Worker names without changing
-  agent state.
+  agent state;
+- `project delete NAME --yes` removes only a named project's private Conductor
+  runtime data. It refuses the default project and projects with connected tmux
+  sessions, and never removes workspaces or terminal sessions.
 
 ### `inbox`
 

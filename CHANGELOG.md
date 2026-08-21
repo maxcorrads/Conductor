@@ -6,6 +6,35 @@ Historical entries use the current **Brain** and **Worker** role terminology.
 Session spellings from releases before 0.3 are described as legacy labels because
 0.3 intentionally replaces that namespace instead of migrating it.
 
+## 0.4.0 — 2026-08-21
+
+### Added
+
+- Generated Brain setup prompt with project identity, recorded workspace,
+  connected Worker sessions, and the Conductor delegation contract. The macOS
+  app can copy it or send it after confirmation.
+- Safe `brain setup` delivery that refuses to paste while Brain is working or
+  while its Codex composer contains an unsent draft.
+- Named-project deletion from the macOS app and CLI, with explicit confirmation,
+  connected-session refusal, path containment checks, and no workspace or tmux
+  deletion. The default project remains protected.
+- Separate **Focus terminal** actions for Brain and Worker sessions. They raise
+  an already-open Terminal or iTerm2 window without opening a fallback window.
+
+### Changed
+
+- Worker launch sheets now start with the Brain's last recorded workspace while
+  remaining editable for independent worktrees.
+- New Terminal/iTerm2 windows receive stable Conductor session titles so later
+  focus actions can identify them reliably.
+
+### Fixed
+
+- Brain and Worker activity now follows the latest visible Codex lifecycle
+  marker, so an older `Working` line cannot keep an idle or paused session active.
+- Native app status surfaces prefer the current live session probe over stale
+  hook activity flags.
+
 ## 0.3.0 — 2026-08-21
 
 ### Added

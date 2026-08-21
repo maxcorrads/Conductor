@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${VERSION:-0.3.0}
+VERSION=${VERSION:-0.4.0}
 BUILD_NUMBER=${BUILD_NUMBER:-1}
 GO_COMMAND=${GO_COMMAND:-go}
 APP_ROOT="$ROOT/macos/ConductorApp"

@@ -115,6 +115,42 @@ func (a *App) Init() error {
 	return a.Store.Init()
 }
 
+// SendBrainSetup serializes setup prompt validation and submission with every
+// state-coordinated Brain delivery. The callback must perform its final live
+// pane checks; it runs while the project state lock prevents a handoff lease
+// from being claimed concurrently.
+func (a *App) SendBrainSetup(prompt string, validate func(tmux.Pane) error) error {
+	if strings.TrimSpace(prompt) == "" {
+		return errors.New("setup prompt cannot be empty")
+	}
+	return a.Store.Update(func(st *state.State) error {
+		if st.Brain.ReservedDelivery != "" {
+			return errors.New("Brain has a reserved handoff; setup prompt was not sent")
+		}
+		if st.Brain.Busy || st.Brain.TurnID != "" {
+			return errors.New("Brain is working; setup prompt was not sent")
+		}
+		pane, err := a.Tmux.ResolvePane(a.BrainSession)
+		if err != nil {
+			return err
+		}
+		if validate != nil {
+			if err := validate(pane); err != nil {
+				return err
+			}
+		}
+		if err := a.Tmux.SendPrompt(pane.ID, prompt); err != nil {
+			return err
+		}
+		now := a.Now().UTC()
+		st.Brain.Session = a.BrainSession
+		st.Brain.Pane = pane.ID
+		st.Brain.Busy = true
+		st.Brain.UpdatedAt = now
+		return nil
+	})
+}
+
 func (a *App) IsWorkerSession(session string) bool {
 	if a.ProjectID == project.DefaultID && strings.Contains(session, project.SessionSeparator) {
 		return false

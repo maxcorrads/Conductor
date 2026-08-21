@@ -81,10 +81,23 @@ The app requires explicit confirmation before:
 
 - `flush --force`;
 - manual `finish`;
+- deleting a named project;
 - uninstalling Conductor hooks.
 
 Normal goal dispatch, `idle`, project initialization, terminal opening, and
 additive hook installation do not add an extra confirmation.
+
+The Worker launch sheet starts with the Brain's last recorded workspace. The
+user can still choose a different directory before opening the real terminal.
+
+The Brain menu exposes a generated setup prompt containing the project,
+Brain/workspace identity, connected Workers, and Conductor delegation rules.
+It can be copied at any time. Direct send requires confirmation, a connected
+idle Brain, and a final CLI check that the Codex composer is empty.
+
+Brain and Worker cards also provide **Focus terminal**, which only raises an
+already-open matching Terminal or iTerm2 window. It never opens a fallback
+window; the existing attach action remains separate.
 
 ## Developer build
 

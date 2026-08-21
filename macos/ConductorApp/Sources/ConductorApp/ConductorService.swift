@@ -467,6 +467,15 @@ final class DashboardModel: ObservableObject {
         await execute(projectID: projectID, arguments: ["idle"], success: "Brain marked idle.")
     }
 
+    func sendBrainSetup(projectID: String, prompt: String) async {
+        await execute(
+            projectID: projectID,
+            arguments: ["brain", "setup", "--stdin"],
+            stdin: prompt,
+            success: "Setup prompt sent to Brain."
+        )
+    }
+
     func initializeProject(_ name: String) async {
         do {
             lastError = nil
@@ -475,6 +484,23 @@ final class DashboardModel: ObservableObject {
             notice = "Project \(name) initialized."
             await refresh()
             selectedProjectID = name.lowercased()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func deleteProject(_ name: String) async {
+        do {
+            lastError = nil
+            let cli = try ConductorCLI.commandCLI()
+            _ = try await cli.run(["project", "delete", name, "--yes"])
+            if selectedProjectID == name {
+                selectedProjectID = nil
+                selectedWorkerSession = nil
+                selectedTaskID = nil
+            }
+            notice = "Project \(name) deleted from Conductor. Workspaces and terminal sessions were not changed."
+            await refresh()
         } catch {
             lastError = error.localizedDescription
         }

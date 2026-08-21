@@ -2,14 +2,75 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/maxcorrads/conductor/internal/config"
 	"github.com/maxcorrads/conductor/internal/project"
 	"github.com/maxcorrads/conductor/internal/state"
 )
+
+// DeleteProject removes only a named project's private Conductor runtime
+// directory. It never removes workspaces or tmux sessions, and refuses to run
+// while any session for the project is still connected.
+func (a *App) DeleteProject() error {
+	if a.ProjectID == project.DefaultID {
+		return errors.New("the default project cannot be deleted")
+	}
+	if err := validateProjectDeletePath(a.BasePaths.ProjectsDir, a.Paths.Home); err != nil {
+		return err
+	}
+	if _, err := os.Stat(a.Paths.State); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("project %q is not initialized", a.ProjectID)
+	} else if err != nil {
+		return fmt.Errorf("inspect project %q: %w", a.ProjectID, err)
+	}
+
+	sessions, err := a.Tmux.ListSessions()
+	if err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		parsed, ok := project.ParseSession(session, a.Config.BrainSession, a.Config.WorkerSessionPattern)
+		if ok && parsed.ProjectID == a.ProjectID {
+			return fmt.Errorf("project %q still has connected tmux sessions; close its Brain and Workers before deleting it", a.ProjectID)
+		}
+	}
+
+	if err := os.RemoveAll(a.Paths.Home); err != nil {
+		return fmt.Errorf("delete project %q: %w", a.ProjectID, err)
+	}
+	return nil
+}
+
+func validateProjectDeletePath(projectsDir, projectHome string) error {
+	for _, path := range []string{projectsDir, projectHome} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect project delete path %q: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to delete through symlinked project path %q", path)
+		}
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(projectsDir)
+	if err != nil {
+		return fmt.Errorf("resolve projects directory %q: %w", projectsDir, err)
+	}
+	resolvedHome, err := filepath.EvalSymlinks(projectHome)
+	if err != nil {
+		return fmt.Errorf("resolve project directory %q: %w", projectHome, err)
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolvedHome)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || strings.Contains(relative, string(os.PathSeparator)) {
+		return fmt.Errorf("refusing to delete unsafe project path %q", projectHome)
+	}
+	return nil
+}
 
 // DiscoverProjectIDs returns every project with local state, plus the default
 // project. Named projects are represented by

@@ -100,6 +100,99 @@ struct NewProjectSheet: View {
     }
 }
 
+struct BrainSetupSheet: View {
+    @EnvironmentObject private var model: DashboardModel
+    @Environment(\.dismiss) private var dismiss
+    let projectID: String
+    @State private var confirmSend = false
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Brain setup prompt").font(.title2.weight(.semibold))
+                Text("Share this identity and delegation contract with the project Brain.")
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView {
+                Text(prompt)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+            }
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.1)) }
+
+            HStack {
+                Label(sendAvailability, systemImage: canSend ? "checkmark.circle" : "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Close", role: .cancel) { dismiss() }
+                Button(copied ? "Copied" : "Copy prompt", systemImage: copied ? "checkmark" : "doc.on.doc") {
+                    copyPrompt()
+                }
+                Button("Send to Brain…", systemImage: "paperplane") {
+                    confirmSend = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canSend)
+            }
+        }
+        .padding(24)
+        .frame(width: 720, height: 620)
+        .confirmationDialog("Send setup prompt to Brain?", isPresented: $confirmSend, titleVisibility: .visible) {
+            Button("Send prompt") {
+                Task {
+                    await model.sendBrainSetup(projectID: projectID, prompt: prompt)
+                    if model.lastError == nil { dismiss() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Conductor will recheck that \(project?.brainSession ?? "the Brain") is idle and its composer is empty before sending anything.")
+        }
+    }
+
+    private var project: ProjectSnapshot? {
+        model.snapshot?.projects.first { $0.id == projectID }
+    }
+
+    private var prompt: String {
+        project?.brainSetupPrompt(
+            connectedSessions: Set(model.snapshot?.tmuxSessions ?? []),
+            sessionActivity: model.snapshot?.sessionActivity ?? [:]
+        ) ?? ""
+    }
+
+    private var brainConnected: Bool {
+        guard let project else { return false }
+        return model.snapshot?.tmuxSessions.contains(project.brainSession) == true
+    }
+
+    private var brainBusy: Bool {
+        guard let project else { return false }
+        return project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:])
+    }
+
+    private var canSend: Bool { brainConnected && !brainBusy && !prompt.isEmpty }
+
+    private var sendAvailability: String {
+        if !brainConnected { return "Connect the Brain to send directly. Copy remains available." }
+        if brainBusy { return "The Brain is working. Wait until it becomes idle to send." }
+        return "Brain is connected and idle. Its empty composer will be verified again before sending."
+    }
+
+    private func copyPrompt() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(prompt, forType: .string)
+        copied = true
+    }
+}
+
 struct GoalSheet: View {
     @EnvironmentObject private var model: DashboardModel
     @Environment(\.dismiss) private var dismiss
@@ -335,7 +428,12 @@ struct NewWorkerSheet: View {
         }
         .padding(24)
         .frame(width: 560)
-        .onAppear { number = suggestedWorkerNumber }
+        .onAppear {
+            number = suggestedWorkerNumber
+            if workspace.isEmpty {
+                workspace = project?.brainWorkspace ?? ""
+            }
+        }
         .task { await model.loadModelCatalog() }
     }
 
