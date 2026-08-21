@@ -149,12 +149,24 @@ conductor status
 
 The tmux transport test suite covers multiline buffer loading and Enter submission, but terminal/TUI key handling can vary by version.
 
+## Luna is stuck at `Replace goal?`
+
+Codex asks for confirmation when a previous goal is still `active`, `paused`, `blocked`, usage-limited, or budget-limited. Conductor clears the previous persisted goal before each new assignment and briefly probes the visible tmux pane for the exact replacement dialog. If the clear and set race, it confirms **Replace current goal** automatically.
+
+For a session already stuck on the dialog, press Enter once to accept the selected replacement. Alternatively press Escape, run `/goal clear`, and resend the assignment. Then verify the installed version:
+
+```bash
+conductor version
+```
+
+The timing knobs are `goal_clear_delay_ms`, `goal_prefix_delay_ms`, and `goal_replace_probe_ms` in `~/.conductor/config.json`. Increase them only when a consistently slow machine still reproduces the issue.
+
 ## Luna receives literal `/goal ...` as an ordinary message
 
 Conductor deliberately types `/goal ` first and pastes only the objective,
 because a large whole-command paste can be treated as ordinary user text by
-some Codex TUI versions. Confirm you are running the packaged v0.2.0 binary or
-a current source build, then retry after clearing the Luna composer.
+some Codex TUI versions. Confirm you are running a build containing this recovery logic or a current
+source build, then retry after clearing the Luna composer.
 
 ```bash
 conductor version
@@ -162,6 +174,8 @@ conductor status
 ```
 
 Also verify that `/goal` is available in Luna's slash-command menu.
+
+When Codex nevertheless handles the assignment as a normal prompt, the worker's `Stop` schedules one delayed local recheck. If no real goal ever appeared and Luna stayed idle, Sol receives the exact final response with status `implicit`. This in-hook check runs once; it does not poll Luna or consume model tokens.
 
 ## A worker session is missing
 
@@ -202,7 +216,7 @@ If Luna cannot read the private goal file under the active sandbox, either grant
 
 ## Goal database or transcript errors
 
-The primary completion path does not require transcript parsing. Database/transcript messages in `conductor.log` usually indicate that the compatibility fallback was attempted.
+The primary completion path does not require transcript parsing. Database/transcript messages in `conductor.log` usually indicate that compatibility or one-shot reconciliation was attempted. Conductor refuses to infer an `implicit` completion when no local source is available or when a source returns an actual read/query error.
 
 Use the explicit `finish` command rather than deleting Codex databases. Repair or move Codex state only when Codex's own diagnostics identify corruption.
 

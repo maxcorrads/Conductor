@@ -46,7 +46,7 @@ Sol decides what to delegate, how Luna should work, and what kind of final hando
 - **Full visibility.** Goals and handoffs are pasted into real terminal windows that remain under human control.
 - **Freedom of handoff.** Sol can request a commit-oriented response, a detailed technical handoff, research, alternatives, or a file-backed report.
 - **Human control.** Conductor never compacts, restarts, resumes, selects models, manages context, or decides when to ask the human.
-- **Event driven.** Codex lifecycle hooks signal activity and completion; there is no resident daemon and no polling loop.
+- **Event driven.** Codex lifecycle hooks signal activity and completion; bounded one-shot local recovery replaces recurring polling.
 - **Project isolation.** Every Sol has an independent worker namespace, state
   file, busy marker, task set, and handoff queue.
 
@@ -351,7 +351,7 @@ Each worker wakes the Sol in its own project as soon as that worker finishes.
 - Busy/idle state and FIFO ordering are scoped per project, so activity in
   `project1` cannot delay or wake `project2`.
 
-There is no timer loop and no model polling. The only detached process is a one-shot delivery helper used after a Sol `Stop` so the terminal composer has time to become idle.
+There is no recurring timer loop and no model polling. The existing `_deliver` helper waits briefly for an idle Sol composer. After an ambiguous Luna `Stop`, the hook itself waits once, performs one local goal-state check, and returns.
 
 ## How completion is detected
 
@@ -365,7 +365,9 @@ The primary path uses supported Codex hooks:
 
 `blocked` is terminal only from Conductor's transport perspective. Conductor does not interpret the blocker; Sol decides whether to send Luna another goal, investigate, use a different worker, or ask the human.
 
-A transcript/goal-database reader exists only as a compatibility fallback. Codex documents transcript JSON as unstable, so manual recovery remains available.
+A transcript/goal-database reader exists as a compatibility fallback. If Luna finishes a normal Codex turn and no goal lifecycle was observed, Conductor waits once and rechecks those local sources. When at least one source was readable and still contains no matching goal, it relays Luna's exact final response with status `implicit`. Any later Luna turn or real goal status cancels the check. `implicit` is a recovery signal for Sol to verify, not proof that the requested goal succeeded.
+
+Conductor never infers completion when no local goal source is available or when a source returns an actual read/query error. Manual recovery remains available with `conductor finish`.
 
 ## Long goals
 
@@ -374,7 +376,7 @@ inline only up to the configured safe limit. Longer goals are written privately
 under the selected project's task directory, and Luna receives a short `/goal`
 that points to the absolute file path.
 
-For inline goals, Conductor types the literal `/goal ` prefix first and pastes only the objective. This keeps large pastes on Codex's slash-command path instead of letting the entire command become an ordinary user prompt. The objective itself is not summarized or rewritten.
+Before assigning a worker, Conductor types `/goal clear` to remove a previous persisted goal, waits briefly, then types the literal `/goal ` prefix and pastes only the objective. A bounded local pane probe confirms Codex's **Replace goal?** dialog if clearing and setting race. This prevents stale blocked/paused goals from trapping the worker while keeping large pastes on Codex's slash-command path. The objective itself is not summarized or rewritten.
 
 This keeps the persisted objective below the Codex limit without discarding the original instructions.
 
@@ -529,7 +531,7 @@ Common recovery:
 conductor idle
 conductor flush
 
-# A worker finished but the completion hook was missed
+# A worker finished but automatic/implicit recovery was unavailable
 cat final-handoff.md | conductor finish luna-1 --stdin --status complete
 
 # Hooks point to an old binary path

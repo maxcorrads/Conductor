@@ -28,7 +28,7 @@ Each Luna owns one worktree and one active goal at a time:
 Conductor owns only transport state:
 
 - sends `/goal` to a named Luna terminal;
-- observes lifecycle events;
+- observes lifecycle events and performs at most one local reconciliation for an ambiguous Stop;
 - stores the final message exactly;
 - delivers it to Sol when safe.
 
@@ -76,6 +76,8 @@ workspace: <absolute worker workspace>
 ```
 
 The task id is deliberately omitted from model-visible text. It remains available in `conductor status --json` and local state.
+
+The normal statuses are `complete` and `blocked`. `implicit` means the worker ended a normal Codex turn with a final message but no goal lifecycle was ever persisted, even after one delayed recheck of at least one readable local source. Sol must treat `implicit` as a recovery signal rather than proof of success and decide whether to inspect, retry, or ask the human.
 
 ## Handoff strategy belongs to Sol
 

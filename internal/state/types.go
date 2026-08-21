@@ -52,6 +52,11 @@ type Task struct {
 	PendingGoalStatus  string    `json:"pending_goal_status,omitempty"`
 	PendingGoalTurnID  string    `json:"pending_goal_turn_id,omitempty"`
 	PendingGoalAt      time.Time `json:"pending_goal_at,omitempty"`
+	ObservedGoalStatus string    `json:"observed_goal_status,omitempty"`
+	GoalObservedAt     time.Time `json:"goal_observed_at,omitempty"`
+	ReconcileToken     string    `json:"reconcile_token,omitempty"`
+	LastStopTurnID     string    `json:"last_stop_turn_id,omitempty"`
+	LastStopAt         time.Time `json:"last_stop_at,omitempty"`
 	DeliveryID         string    `json:"delivery_id,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`

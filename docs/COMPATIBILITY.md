@@ -2,7 +2,7 @@
 
 ## Target environment
 
-Conductor 0.2.0 targets:
+Conductor targets:
 
 - macOS Apple Silicon (`darwin/arm64`);
 - macOS Intel (`darwin/amd64`);
@@ -12,12 +12,12 @@ Conductor 0.2.0 targets:
   - command hooks;
   - `PostToolUse` fields `tool_name`, `tool_input`, and `tool_response`;
   - `Stop.last_assistant_message`;
-- tmux with `load-buffer`, `paste-buffer`, and `send-keys`.
+- tmux with `load-buffer`, `paste-buffer`, `send-keys`, and `capture-pane`.
 
 It supports the unprefixed `default` project plus any number of named project
 namespaces using `<project>--sol` and `<project>--luna-N`.
 
-The implementation and documentation were checked against the public Codex hook and goal documentation available on 2026-08-20.
+The implementation and documentation were checked against the public Codex hook and goal implementation available on 2026-08-21.
 
 ## Feature detection
 
@@ -40,7 +40,9 @@ Conductor writes standard user-level `~/.codex/hooks.json` groups for:
 
 Existing groups remain present. Codex command-hook trust is separate from feature enablement.
 
-## Transcript fallback
+## Completion recovery
+
+The primary path remains `PostToolUse(update_goal)` followed by `Stop`. If a worker `Stop` contains a final message but no goal has ever been observed, the Stop hook waits once and rechecks local Codex state exactly once. A later worker turn or any real goal status cancels that check. Only a reliably goal-less turn may produce an `implicit` handoff; unavailable or unreadable local sources leave the task open for manual recovery. There is no recurring loop and no model polling.
 
 Codex documents transcript JSON as unstable. Conductor's transcript reader therefore:
 
@@ -54,7 +56,7 @@ The optional SQLite compatibility fallback tries known current and historical lo
 
 ## tmux versions
 
-Conductor first uses bracketed paste (`paste-buffer -p`). If tmux rejects that option, it retries without `-p` for older versions. For goals, it sends `/goal ` as literal keys before pasting the objective, avoiding the Codex TUI edge where a large whole-command paste can bypass slash-command dispatch.
+Conductor first uses bracketed paste (`paste-buffer -p`). If tmux rejects that option, it retries without `-p` for older versions. Before a new worker assignment it types `/goal clear`, waits briefly, types `/goal ` as literal keys, then pastes the objective. A bounded `capture-pane` probe recognizes only the exact Codex **Replace goal?** markers and confirms the selected replacement when necessary. This avoids both stale-goal modals and the TUI edge where a large whole-command paste can bypass slash-command dispatch.
 
 ## Build compatibility
 

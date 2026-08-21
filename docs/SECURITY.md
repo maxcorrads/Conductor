@@ -5,7 +5,7 @@
 Conductor contains no network client and makes no OpenAI API calls. It invokes only:
 
 - the local `tmux` executable;
-- the installed Conductor binary for lifecycle hooks and one-shot delivery;
+- the installed Conductor binary for lifecycle hooks, one-shot delivery, and one delayed in-hook goal reconciliation;
 - optionally `sqlite3` for a compatibility-only local goal-status lookup;
 - `codex --version` and `codex features list` in `doctor`.
 
@@ -63,7 +63,7 @@ Anyone with access to the user's account or backups may be able to read this dat
 
 ## tmux paste behavior
 
-Conductor sends exact multiline text through a named tmux buffer and then sends Enter. It does not evaluate the text as a shell command itself. The receiving Codex model may subsequently choose to execute commands under its normal permission policy.
+Conductor sends exact multiline text through a named tmux buffer and then sends Enter. It does not evaluate the text as a shell command itself. Before worker delegation it also uses local key events for `/goal clear` and a bounded `capture-pane` read to recognize the exact Codex replacement dialog. The receiving Codex model may subsequently choose to execute commands under its normal permission policy.
 
 A wrong or stale target session can expose content in the wrong terminal. Keep
 unique session names, use the same project prefix for a Sol and its workers,

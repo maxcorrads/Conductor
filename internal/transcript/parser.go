@@ -88,18 +88,26 @@ func LatestGoalEvent(path, sessionID, expectedObjective string, since time.Time,
 }
 
 func GoalStatusFromSQLite(sessionID string) (GoalEvent, bool, error) {
+	event, found, _, err := GoalStatusFromSQLiteChecked(sessionID)
+	return event, found, err
+}
+
+// GoalStatusFromSQLiteChecked reports whether a compatible local database was
+// actually queried. Callers that infer absence must distinguish "no matching
+// row" from "no readable goal source was available".
+func GoalStatusFromSQLiteChecked(sessionID string) (GoalEvent, bool, bool, error) {
 	if sessionID == "" {
-		return GoalEvent{}, false, nil
+		return GoalEvent{}, false, false, nil
 	}
 	sqlite, err := exec.LookPath("sqlite3")
 	if err != nil {
-		return GoalEvent{}, false, nil
+		return GoalEvent{}, false, false, nil
 	}
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return GoalEvent{}, false, err
+			return GoalEvent{}, false, false, err
 		}
 		codexHome = filepath.Join(home, ".codex")
 	}
@@ -112,10 +120,12 @@ func GoalStatusFromSQLite(sessionID string) (GoalEvent, bool, error) {
 	}
 	query := "PRAGMA query_only=ON; PRAGMA busy_timeout=100; SELECT status || char(9) || objective FROM thread_goals WHERE thread_id='" + sqlQuote(sessionID) + "' LIMIT 1;"
 	var errs []string
+	checked := false
 	for _, db := range candidates {
 		if _, err := os.Stat(db); err != nil {
 			continue
 		}
+		checked = true
 		out, err := exec.Command(sqlite, "-noheader", db, query).CombinedOutput()
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %s", filepath.Base(db), strings.TrimSpace(string(out))))
@@ -130,12 +140,12 @@ func GoalStatusFromSQLite(sessionID string) (GoalEvent, bool, error) {
 		if len(parts) == 2 {
 			event.Objective = parts[1]
 		}
-		return event, event.Status != "", nil
+		return event, event.Status != "", true, nil
 	}
 	if len(errs) > 0 {
-		return GoalEvent{}, false, errors.New(strings.Join(errs, "; "))
+		return GoalEvent{}, false, checked, errors.New(strings.Join(errs, "; "))
 	}
-	return GoalEvent{}, false, nil
+	return GoalEvent{}, false, checked, nil
 }
 
 func readTailLines(path string, maxBytes int64) ([][]byte, error) {

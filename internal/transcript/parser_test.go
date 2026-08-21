@@ -100,3 +100,15 @@ func TestLatestGoalEventReadsTailOfLargeFile(t *testing.T) {
 		t.Fatalf("got found=%v event=%+v", found, event)
 	}
 }
+
+func TestGoalStatusFromSQLiteCheckedReportsUnavailableLookup(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	event, found, checked, err := GoalStatusFromSQLiteChecked("thread-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found || checked || event.Status != "" {
+		t.Fatalf("unavailable sqlite lookup reported evidence: event=%+v found=%v checked=%v", event, found, checked)
+	}
+}
