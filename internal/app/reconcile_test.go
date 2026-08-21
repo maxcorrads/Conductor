@@ -16,12 +16,12 @@ func TestMissedGoalLifecycleProducesImplicitHandoffAfterOneShotReconciliation(t 
 	t.Setenv("CODEX_HOME", t.TempDir())
 	a, fake, _ := testApp(t)
 	a.Config.GoalReconcileDelayMS = 0
-	task, err := a.Delegate("luna-1", "Investigate and return a handoff")
+	task, err := a.Delegate("worker-1", "Investigate and return a handoff")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("sol")
-	if err := a.HandleHook("stop", HookInput{SessionID: "sol-thread", CWD: "/repo/main"}); err != nil {
+	fake.setCurrent("brain")
+	if err := a.HandleHook("stop", HookInput{SessionID: "brain-thread", CWD: "/repo/main"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -30,7 +30,7 @@ func TestMissedGoalLifecycleProducesImplicitHandoffAfterOneShotReconciliation(t 
 		t.Fatal(err)
 	}
 	message := "## Handoff\n\nThe work is complete, but Codex handled the assignment as a normal prompt.  "
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("stop", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "worker-turn",
 		TranscriptPath: &transcriptPath, LastAssistantMessage: &message,
@@ -42,7 +42,7 @@ func TestMissedGoalLifecycleProducesImplicitHandoffAfterOneShotReconciliation(t 
 	if len(prompts) != 2 {
 		t.Fatalf("expected goal and implicit handoff, got %+v", prompts)
 	}
-	prefix := "[CONDUCTOR HANDOFF | luna-1 | implicit]\nworkspace: " + task.Workspace + "\n\n"
+	prefix := "[CONDUCTOR HANDOFF | worker-1 | implicit]\nworkspace: " + task.Workspace + "\n\n"
 	if !strings.HasPrefix(prompts[1].text, prefix) {
 		t.Fatalf("implicit envelope missing: %q", prompts[1].text)
 	}
@@ -62,11 +62,11 @@ func TestImplicitReconciliationRequiresReadableGoalSource(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	a, fake, _ := testApp(t)
 	a.Config.GoalReconcileDelayMS = 0
-	task, err := a.Delegate("luna-1", "Task without local goal artifacts")
+	task, err := a.Delegate("worker-1", "Task without local goal artifacts")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	message := "A final response exists, but there is no transcript or goal database to verify the lifecycle."
 	if err := a.HandleHook("stop", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "worker-turn",
@@ -86,7 +86,7 @@ func TestImplicitReconciliationRequiresReadableGoalSource(t *testing.T) {
 		t.Fatalf("missing recovery diagnostic: %+v", current)
 	}
 	if len(fake.prompts()) != 1 {
-		t.Fatal("unverifiable reconciliation unexpectedly woke Sol")
+		t.Fatal("unverifiable reconciliation unexpectedly woke Brain")
 	}
 }
 
@@ -94,15 +94,15 @@ func TestObservedActiveGoalIsNeverInferredComplete(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	a, fake, _ := testApp(t)
 	a.Config.GoalReconcileDelayMS = 0
-	task, err := a.Delegate("luna-1", "Long-running goal")
+	task, err := a.Delegate("worker-1", "Long-running goal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("sol")
-	if err := a.HandleHook("stop", HookInput{SessionID: "sol-thread", CWD: "/repo/main"}); err != nil {
+	fake.setCurrent("brain")
+	if err := a.HandleHook("stop", HookInput{SessionID: "brain-thread", CWD: "/repo/main"}); err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("post-tool-use", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "worker-turn",
 		ToolName: "update_goal", ToolInput: json.RawMessage(`{"status":"active"}`),
@@ -126,14 +126,14 @@ func TestObservedActiveGoalIsNeverInferredComplete(t *testing.T) {
 		t.Fatalf("active goal became eligible for implicit completion: %+v", current)
 	}
 	if len(fake.prompts()) != 1 {
-		t.Fatal("active goal unexpectedly woke Sol")
+		t.Fatal("active goal unexpectedly woke Brain")
 	}
 }
 
 func TestLaterWorkerTurnCancelsImplicitReconciliation(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	a, fake, _ := testApp(t)
-	task, err := a.Delegate("luna-1", "Task")
+	task, err := a.Delegate("worker-1", "Task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestLaterWorkerTurnCancelsImplicitReconciliation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("user-prompt-submit", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "turn-two",
 	}); err != nil {
@@ -178,12 +178,12 @@ func TestLaterWorkerTurnCancelsImplicitReconciliation(t *testing.T) {
 func TestReconciliationPrefersLateTerminalGoalOverImplicitStatus(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	a, fake, clock := testApp(t)
-	task, err := a.Delegate("luna-1", "Task with delayed goal persistence")
+	task, err := a.Delegate("worker-1", "Task with delayed goal persistence")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("sol")
-	if err := a.HandleHook("stop", HookInput{SessionID: "sol-thread", CWD: "/repo/main"}); err != nil {
+	fake.setCurrent("brain")
+	if err := a.HandleHook("stop", HookInput{SessionID: "brain-thread", CWD: "/repo/main"}); err != nil {
 		t.Fatal(err)
 	}
 	transcriptPath := filepath.Join(a.Paths.Home, "late-goal.jsonl")
@@ -212,7 +212,7 @@ func TestReconciliationPrefersLateTerminalGoalOverImplicitStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	prompts := fake.prompts()
-	if len(prompts) != 2 || !strings.Contains(prompts[1].text, "[CONDUCTOR HANDOFF | luna-1 | complete]") {
+	if len(prompts) != 2 || !strings.Contains(prompts[1].text, "[CONDUCTOR HANDOFF | worker-1 | complete]") {
 		t.Fatalf("late terminal goal was not preferred: %+v", prompts)
 	}
 	st, err := a.Store.Read()
@@ -221,5 +221,52 @@ func TestReconciliationPrefersLateTerminalGoalOverImplicitStatus(t *testing.T) {
 	}
 	if st.Tasks[task.ID].TerminalGoalStatus != "complete" || st.Tasks[task.ID].ObservedGoalStatus != "complete" {
 		t.Fatalf("late goal state was not recorded: %+v", st.Tasks[task.ID])
+	}
+}
+
+func TestReconciliationDoesNotFinishWhenPersistedGoalHasDifferentObjective(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	a, _, clock := testApp(t)
+	task, err := a.Delegate("worker-1", "Expected delegated task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(a.Paths.Home, "mismatched-goal.jsonl")
+	messagePath := filepath.Join(a.Paths.CacheDir, task.ID+"-last-assistant.md")
+	if err := os.WriteFile(messagePath, []byte("A normal response that must not become a handoff."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	line := fmt.Sprintf("{\"timestamp\":%q,\"payload\":{\"type\":\"thread_goal_updated\",\"threadId\":\"worker-thread\",\"goal\":{\"objective\":%q,\"status\":\"complete\"}}}\n{\"timestamp\":%q,\"payload\":{\"type\":\"thread_goal_updated\",\"threadId\":\"worker-thread\",\"goal\":{\"objective\":\"A different persistent goal\",\"status\":\"active\"}}}\n", clock.Format(time.RFC3339), task.SentGoalObjective, clock.Add(time.Second).Format(time.RFC3339))
+	if err := os.WriteFile(transcriptPath, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token := "rec-mismatched-goal"
+	if err := a.Store.Update(func(st *state.State) error {
+		current := st.Tasks[task.ID]
+		current.ReconcileToken = token
+		current.TranscriptPath = transcriptPath
+		current.LastAssistantPath = messagePath
+		current.CodexSessionID = "worker-thread"
+		st.Workers[task.WorkerSession].Busy = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ReconcileTask(task.ID, token, 0); err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := st.Tasks[task.ID]
+	if current.Status != state.TaskRunning || current.ReconcileToken != "" {
+		t.Fatalf("mismatched persistent goal changed task lifecycle: %+v", current)
+	}
+	if !strings.Contains(current.LastError, "objective does not match") {
+		t.Fatalf("mismatch was not made visible: %+v", current)
+	}
+	if len(st.Deliveries) != 0 {
+		t.Fatalf("mismatched persistent goal created a handoff: %+v", st.Deliveries)
 	}
 }

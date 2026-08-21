@@ -15,7 +15,7 @@ Conductor targets:
 - tmux with `load-buffer`, `paste-buffer`, `send-keys`, and `capture-pane`.
 
 It supports the unprefixed `default` project plus any number of named project
-namespaces using `<project>--sol` and `<project>--luna-N`.
+namespaces using `<project>--brain` and `<project>--worker-N`.
 
 The implementation and documentation were checked against the public Codex hook and goal implementation available on 2026-08-21.
 
@@ -56,7 +56,7 @@ The optional SQLite compatibility fallback tries known current and historical lo
 
 ## tmux versions
 
-Conductor first uses bracketed paste (`paste-buffer -p`). If tmux rejects that option, it retries without `-p` for older versions. Before a new worker assignment it types `/goal clear`, waits briefly, types `/goal ` as literal keys, then pastes the objective. A bounded `capture-pane` probe recognizes only the exact Codex **Replace goal?** markers and confirms the selected replacement when necessary. This avoids both stale-goal modals and the TUI edge where a large whole-command paste can bypass slash-command dispatch.
+Conductor first uses bracketed paste (`paste-buffer -p`). If tmux rejects that option, it retries without `-p` for older versions. Before a new worker assignment it types `/goal ` as literal keys, then pastes the objective. A bounded `capture-pane` probe recognizes only the exact Codex **Replace goal?** markers and confirms the selected replacement when necessary. This avoids both stale-goal modals and the TUI edge where a large whole-command paste can bypass slash-command dispatch.
 
 ## Build compatibility
 
@@ -73,5 +73,5 @@ Conductor does not currently support:
 - integrated Codex subagents;
 - several Codex panes inside one Conductor session name;
 - automatic session resume or context management.
-- multiple Sol sessions inside one project namespace (use separate project
+- multiple Brain sessions inside one project namespace (use separate project
   IDs instead).

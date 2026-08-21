@@ -65,7 +65,11 @@ func TestUninstallRemovesOnlyConductorHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 	hooks := root["hooks"].(map[string]any)
-	hooks["Stop"] = append(hooks["Stop"].([]any), map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "echo keep"}}})
+	hooks["Stop"] = append(hooks["Stop"].([]any), map[string]any{"hooks": []any{
+		map[string]any{"type": "command", "command": "echo keep"},
+		map[string]any{"type": "command", "command": "echo hook stop"},
+		map[string]any{"type": "command", "command": "my-hook stop"},
+	}})
 	data, _ = json.MarshalIndent(root, "", "  ")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -77,8 +81,30 @@ func TestUninstallRemovesOnlyConductorHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(final, []byte("hook stop")) || bytes.Contains(final, []byte("hook post-tool-use")) || !bytes.Contains(final, []byte("echo keep")) {
+	if bytes.Contains(final, []byte("'/tmp/conductor' hook stop")) || bytes.Contains(final, []byte("'/tmp/conductor' hook post-tool-use")) ||
+		!bytes.Contains(final, []byte("echo keep")) || !bytes.Contains(final, []byte("echo hook stop")) || !bytes.Contains(final, []byte("my-hook stop")) {
 		t.Fatalf("unexpected final hooks: %s", final)
+	}
+}
+
+func TestConductorCommandRecognitionRequiresExactExecutableAndArguments(t *testing.T) {
+	for _, command := range []string{
+		"echo hook stop",
+		"my-hook stop",
+		"echo conductor hook stop",
+		"'/tmp/not-conductor' hook stop",
+		"'/tmp/conductor' hook stop --extra",
+		"'/tmp/conductor'; echo hook stop",
+	} {
+		if isConductorCommand(command, "Stop") {
+			t.Fatalf("non-Conductor command was accepted: %q", command)
+		}
+	}
+	if !isConductorCommand("'/tmp/conductor' hook stop", "Stop") {
+		t.Fatal("exact Conductor command was rejected")
+	}
+	if !isConductorCommand("/tmp/conductor hook stop", "Stop") {
+		t.Fatal("legacy unquoted Conductor command was rejected")
 	}
 }
 

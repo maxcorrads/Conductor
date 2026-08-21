@@ -11,12 +11,12 @@ func TestDefaultGoalRecoverySettingsAreValid(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.GoalClearDelayMS <= 0 || cfg.GoalPrefixDelayMS <= 0 || cfg.GoalReplaceProbeMS <= 0 || cfg.GoalReconcileDelayMS <= 0 {
+	if cfg.GoalPrefixDelayMS <= 0 || cfg.GoalReplaceProbeMS <= 0 || cfg.GoalReconcileDelayMS <= 0 {
 		t.Fatalf("goal recovery defaults must be enabled: %+v", cfg)
 	}
 }
 
-func TestLoadLegacyConfigKeepsNewGoalRecoveryDefaults(t *testing.T) {
+func TestLoadRejectsVersionOneConfig(t *testing.T) {
 	dir := t.TempDir()
 	paths := Paths{
 		Home:        dir,
@@ -31,8 +31,8 @@ func TestLoadLegacyConfigKeepsNewGoalRecoveryDefaults(t *testing.T) {
 	}
 	legacy := `{
   "version": 1,
-  "sol_session": "sol",
-  "worker_session_pattern": "^luna-[1-9][0-9]*$",
+  "brain_session": "brain",
+  "worker_session_pattern": "^worker-[1-9][0-9]*$",
   "tmux_command": "tmux",
   "delivery_delay_ms": 180,
   "inline_goal_max_chars": 3500,
@@ -42,15 +42,20 @@ func TestLoadLegacyConfigKeepsNewGoalRecoveryDefaults(t *testing.T) {
 	if err := os.WriteFile(paths.Config, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load(paths)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := Load(paths); err == nil {
+		t.Fatal("expected version 1 configuration to be rejected")
 	}
-	defaults := Default()
-	if cfg.GoalClearDelayMS != defaults.GoalClearDelayMS ||
-		cfg.GoalPrefixDelayMS != defaults.GoalPrefixDelayMS ||
-		cfg.GoalReplaceProbeMS != defaults.GoalReplaceProbeMS ||
-		cfg.GoalReconcileDelayMS != defaults.GoalReconcileDelayMS {
-		t.Fatalf("legacy config lost new defaults: %+v", cfg)
+}
+
+func TestValidateRejectsDefaultSessionsThatOverlapNamedProjects(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.BrainSession = "demo--brain" },
+		func(cfg *Config) { cfg.WorkerSessionPattern = `^.*--worker-[1-9][0-9]*$` },
+	} {
+		cfg := Default()
+		mutate(&cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("ambiguous config unexpectedly valid: %+v", cfg)
+		}
 	}
 }

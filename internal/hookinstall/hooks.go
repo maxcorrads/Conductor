@@ -273,7 +273,10 @@ func containsHandler(hooks map[string]any, event, expectedMatcher, executableOrC
 		for _, rawHandler := range handlers {
 			handler, _ := rawHandler.(map[string]any)
 			command, _ := handler["command"].(string)
-			if command == executableOrCommand || (strings.Contains(command, executableOrCommand) && isConductorCommand(command, event)) {
+			if command == executableOrCommand {
+				return true
+			}
+			if executable, ok := conductorCommandExecutable(command, event); ok && executable == executableOrCommand {
 				return true
 			}
 		}
@@ -282,13 +285,46 @@ func containsHandler(hooks map[string]any, event, expectedMatcher, executableOrC
 }
 
 func isConductorCommand(command, event string) bool {
+	_, ok := conductorCommandExecutable(command, event)
+	return ok
+}
+
+func conductorCommandExecutable(command, event string) (string, bool) {
 	subcommand := map[string]string{
 		"SessionStart":     "hook session-start",
 		"UserPromptSubmit": "hook user-prompt-submit",
 		"PostToolUse":      "hook post-tool-use",
 		"Stop":             "hook stop",
 	}[event]
-	return subcommand != "" && strings.Contains(command, subcommand)
+	if subcommand == "" {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(command)
+	suffix := " " + subcommand
+	if !strings.HasSuffix(trimmed, suffix) {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimSuffix(trimmed, suffix))
+	executable, ok := unquoteExecutableToken(token)
+	if !ok || filepath.Base(executable) != "conductor" {
+		return "", false
+	}
+	return executable, true
+}
+
+func unquoteExecutableToken(token string) (string, bool) {
+	if len(token) >= 2 && token[0] == '\'' && token[len(token)-1] == '\'' {
+		inner := token[1 : len(token)-1]
+		withoutEscapedQuotes := strings.ReplaceAll(inner, "'\\''", "")
+		if strings.Contains(withoutEscapedQuotes, "'") {
+			return "", false
+		}
+		return strings.ReplaceAll(inner, "'\\''", "'"), true
+	}
+	if token == "" || strings.ContainsAny(token, " \t\r\n;&|$`()<>\\\"'") {
+		return "", false
+	}
+	return token, true
 }
 
 func shellQuote(value string) string {

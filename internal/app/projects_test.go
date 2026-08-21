@@ -27,18 +27,18 @@ func TestNewForHookFindsNamedProjectByCodexSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := project2.Store.Update(func(st *state.State) error {
-		st.Sol.CodexSessionID = "project2-sol-session"
-		st.Sol.CWD = "/repo/project2"
+		st.Brain.CodexSessionID = "project2-brain-session"
+		st.Brain.CWD = "/repo/project2"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := NewForHook(HookInput{SessionID: "project2-sol-session", CWD: "/repo/project2"})
+	got, err := NewForHook(HookInput{SessionID: "project2-brain-session", CWD: "/repo/project2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ProjectID != "project2" || got.SolSession != "project2--sol" {
-		t.Fatalf("hook routed to wrong project: project=%s sol=%s", got.ProjectID, got.SolSession)
+	if got.ProjectID != "project2" || got.BrainSession != "project2--brain" {
+		t.Fatalf("hook routed to wrong project: project=%s brain=%s", got.ProjectID, got.BrainSession)
 	}
 }

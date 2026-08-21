@@ -1,6 +1,6 @@
-# Multiple projects and multiple Sol sessions
+# Multiple projects and multiple Brain sessions
 
-Conductor 0.2 scopes every coordinator and worker pool to a **project ID**.
+Conductor 0.3 scopes every Brain and Worker pool to a **project ID**.
 A project is a transport namespace, not a Codex concept and not necessarily a
 single Git repository.
 
@@ -9,30 +9,30 @@ single Git repository.
 The backwards-compatible default project remains:
 
 ```text
-sol
-luna-1
-luna-2
+brain
+worker-1
+worker-2
 ...
 ```
 
 Named projects use:
 
 ```text
-<project>--sol
-<project>--luna-1
-<project>--luna-2
+<project>--brain
+<project>--worker-1
+<project>--worker-2
 ...
 ```
 
 Examples:
 
 ```text
-project1--sol
-project1--luna-1
-project1--luna-2
+project1--brain
+project1--worker-1
+project1--worker-2
 
-project2--sol
-project2--luna-1
+project2--brain
+project2--worker-1
 ```
 
 Project names are normalized to lowercase. Use letters, numbers, and hyphens;
@@ -52,46 +52,46 @@ Codex, Git, or worktrees.
 ## Open the terminals
 
 ```bash
-# Project1 Sol
+# Project1 Brain
 cd /repos/project1
-tmux new -s project1--sol
+tmux new -s project1--brain
 codex
 
-# Project1 Luna 1
-cd /repos/project1-luna-1
-tmux new -s project1--luna-1
+# Project1 Worker 1
+cd /repos/project1-worker-1
+tmux new -s project1--worker-1
 codex
 
-# Project2 Sol
+# Project2 Brain
 cd /repos/project2
-tmux new -s project2--sol
+tmux new -s project2--brain
 codex
 
-# Project2 Luna 1
-cd /repos/project2-luna-1
-tmux new -s project2--luna-1
+# Project2 Worker 1
+cd /repos/project2-worker-1
+tmux new -s project2--worker-1
 codex
 ```
 
 ## Delegate without repeating the project name
 
-Inside `project1--sol`:
+Inside `project1--brain`:
 
 ```bash
-conductor goal luna-1 "Implement the project1 change."
+conductor goal worker-1 "Implement the project1 change."
 ```
 
-Conductor resolves the physical target as `project1--luna-1`.
+Conductor resolves the physical target as `project1--worker-1`.
 
-Inside `project2--sol`, the same command:
+Inside `project2--brain`, the same command:
 
 ```bash
-conductor goal luna-1 "Investigate the project2 issue."
+conductor goal worker-1 "Investigate the project2 issue."
 ```
 
-resolves to `project2--luna-1`.
+resolves to `project2--worker-1`.
 
-The short `luna-N` alias is what Sol sees and what appears in the handoff
+The short `worker-N` alias is what Brain sees and what appears in the handoff
 envelope. The project prefix is transport metadata only, so namespacing does
 not add text to goals or worker replies.
 
@@ -99,17 +99,17 @@ not add text to goals or worker replies.
 
 Each project has its own:
 
-- Sol busy/idle state;
+- Brain busy/idle state;
 - workers and active tasks;
 - FIFO handoff inbox;
 - task, cache, handoff, and log files;
 - lock file.
 
-A completed `project1--luna-1` can wake only `project1--sol`. It cannot wake,
-queue behind, or change the state of `project2--sol`.
+A completed `project1--worker-1` can wake only `project1--brain`. It cannot wake,
+queue behind, or change the state of `project2--brain`.
 
-Workers still wake their own Sol one at a time as soon as they finish. If that
-Sol is busy, only that project's handoff is queued.
+Workers still wake their own Brain one at a time as soon as they finish. If that
+Brain is busy, only that project's handoff is queued.
 
 ## Commands outside tmux
 
@@ -133,22 +133,22 @@ conductor status --all --json
 `CONDUCTOR_PROJECT=project1` can also provide a non-tmux default, but the
 explicit flag is clearer for occasional administrative commands.
 
-## Two Sol coordinators for the same repository
+## Two Brain coordinators for the same repository
 
 A project identifies an independent orchestration group, not a repository.
-To run two Sol sessions against the same codebase, create two namespaces:
+To run two Brain sessions against the same codebase, create two namespaces:
 
 ```text
-project1-a--sol
-project1-a--luna-1
+project1-a--brain
+project1-a--worker-1
 
-project1-b--sol
-project1-b--luna-1
+project1-b--brain
+project1-b--worker-1
 ```
 
-Use separate Luna worktrees for every worker. Sol workspaces may point to the
+Use separate Worker worktrees for every worker. Brain workspaces may point to the
 same repository only when you deliberately accept concurrent coordinator
-activity; separate Sol worktrees are safer if both may edit.
+activity; separate Brain worktrees are safer if both may edit.
 
 ## State layout
 
@@ -178,15 +178,15 @@ The hook configuration remains global. Every hook event is routed to the
 owning project from its tmux session; if tmux context is unavailable,
 Conductor falls back to recorded Codex session IDs and workspaces.
 
-## Compatibility with 0.1
+## Clean 0.3 runtime
 
-Existing `sol` and `luna-N` sessions continue to use the `default` project and
-the existing `~/.conductor/state.json`. No migration command is required.
-You can add named projects incrementally while the default project remains in
-use.
+The Brain/Worker protocol uses config and state schema 2. Version 1 runtime data
+is rejected instead of being guessed or partially migrated. Move the previous
+`~/.conductor` directory aside before installation, then initialize a clean
+default project and any named projects you need.
 
 ## Current boundary
 
-Each project has exactly one Sol session and any number of Luna sessions. To
-obtain N Sol sessions, create N project namespaces. A Luna can have only one
-active Conductor goal at a time, exactly as in 0.1.
+Each project has exactly one Brain session and any number of Worker sessions. To
+obtain N Brain sessions, create N project namespaces. A Worker can have only one
+active Conductor goal at a time.

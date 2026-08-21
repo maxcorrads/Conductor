@@ -17,37 +17,37 @@
 
 Conductor is a tiny, local message bus for **visible Codex CLI sessions** running in real `tmux` terminals.
 
-It lets any number of persistent **Sol** sessions coordinate their own **Luna**
+It lets any number of persistent **Brain** sessions coordinate their own **Worker**
 worker pools without Codex's integrated subagent/spawn mechanism, API billing,
-background polling, or an orchestration model. Each Sol/Luna group is an
+background polling, or an orchestration model. Each Brain/Worker group is an
 isolated Conductor project.
 
 ```text
 Project: project1                           Project: project2
 ┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│ tmux: project1--sol             │         │ tmux: project2--sol             │
+│ tmux: project1--brain             │         │ tmux: project2--brain             │
 │             │                   │         │             │                   │
-│             ├─ project1--luna-1 │         │             ├─ project2--luna-1 │
-│             └─ project1--luna-2 │         │             └─ project2--luna-2 │
+│             ├─ project1--worker-1 │         │             ├─ project2--worker-1 │
+│             └─ project1--worker-2 │         │             └─ project2--worker-2 │
 │                                 │         │                                 │
 │ independent FIFO inbox          │         │ independent FIFO inbox          │
 └─────────────────────────────────┘         └─────────────────────────────────┘
 
-Inside either Sol terminal the command remains simply:
+Inside either Brain terminal the command remains simply:
 
-    conductor goal luna-1 "..."
+    conductor goal worker-1 "..."
 ```
 
-Sol decides what to delegate, how Luna should work, and what kind of final handoff it wants. Conductor does not summarize or constrain the handoff. It forwards Luna's final assistant message verbatim, with only a small envelope identifying the worker, goal status, and workspace.
+Brain decides what to delegate, how Worker should work, and what kind of final handoff it wants. Conductor does not summarize or constrain the handoff. It forwards Worker's final assistant message verbatim, with only a small envelope identifying the worker, goal status, and workspace.
 
 ## Design goals
 
 - **Minimum token overhead.** No polling turns, no orchestration LLM, no duplicated diffs, and only a tiny transport envelope.
 - **Full visibility.** Goals and handoffs are pasted into real terminal windows that remain under human control.
-- **Freedom of handoff.** Sol can request a commit-oriented response, a detailed technical handoff, research, alternatives, or a file-backed report.
+- **Freedom of handoff.** Brain can request a commit-oriented response, a detailed technical handoff, research, alternatives, or a file-backed report.
 - **Human control.** Conductor never compacts, restarts, resumes, selects models, manages context, or decides when to ask the human.
 - **Event driven.** Codex lifecycle hooks signal activity and completion; bounded one-shot local recovery replaces recurring polling.
-- **Project isolation.** Every Sol has an independent worker namespace, state
+- **Project isolation.** Every Brain has an independent worker namespace, state
   file, busy marker, task set, and handoff queue.
 
 ## What Conductor does not do
@@ -55,7 +55,7 @@ Sol decides what to delegate, how Luna should work, and what kind of final hando
 Conductor does **not**:
 
 - create or manage git worktrees;
-- choose Sol/Luna models;
+- choose Brain/Worker models;
 - manage Codex authentication or subscriptions;
 - compact, clear, restart, or resume a Codex context;
 - use OpenAI APIs;
@@ -70,9 +70,13 @@ Conductor does **not**:
 - a recent official Codex CLI with the `goals` and `hooks` features;
 - `tmux`;
 - one visible Codex process per named tmux session;
-- separate worktrees for Luna workers, created and managed by you.
+- separate worktrees for Worker workers, created and managed by you.
 
 Go is needed only to build from source. The release archive includes prebuilt macOS binaries.
+
+The optional native app requires macOS 14 or newer. It includes the CLI and can
+install or update `~/.local/bin/conductor` plus the Codex hooks during first
+launch.
 
 ## Install
 
@@ -86,6 +90,31 @@ From the extracted release directory:
 ```bash
 ./scripts/install.sh
 ```
+
+### Native macOS app
+
+Download `Conductor-vX.Y.Z-macos.zip` from the same GitHub Release, move
+`Conductor.app` to Applications, and open it. The notarized universal app runs
+on Apple Silicon and Intel Macs.
+
+On first launch, choose **Install CLI and hooks**. Conductor preserves existing
+Codex hooks and installs its bundled CLI to `~/.local/bin/conductor`. Restart
+Codex sessions, open `/hooks`, inspect the exact commands, and trust them.
+
+The app provides:
+
+- a native project/Brain/Worker dashboard and menu bar status;
+- exact goal dispatch and handoff inspection;
+- bounded log tails and machine-readable doctor results;
+- `idle`, `flush`, confirmed force-delivery, and confirmed manual finish;
+- project initialization and additive hook management;
+- configurable Terminal/iTerm2 priority for opening or attaching to real tmux
+  sessions;
+- free-form Codex model selection plus model-aware reasoning effort when a new
+  Brain or Worker session is created. It never creates or manages worktrees.
+
+See [`docs/MACOS_APP.md`](docs/MACOS_APP.md) for app behavior, privacy, and
+release signing configuration.
 
 The installer:
 
@@ -117,7 +146,7 @@ CONDUCTOR_BUILD_FROM_SOURCE=1 ./scripts/install.sh
 
 ### Codex permissions
 
-`conductor goal` writes private transport state outside the project and talks to the local tmux socket. Depending on the active Codex permission profile, the first delegation may require approval. For a low-friction ephemeral setup, launch every Sol/Luna terminal with the same temp-backed state directory:
+`conductor goal` writes private transport state outside the project and talks to the local tmux socket. Depending on the active Codex permission profile, the first delegation may require approval. For a low-friction ephemeral setup, launch every Brain/Worker terminal with the same temp-backed state directory:
 
 ```bash
 export CONDUCTOR_HOME="${TMPDIR%/}/conductor"
@@ -135,23 +164,22 @@ Conductor derives the project from the current tmux session name. A named
 project uses this fixed convention:
 
 ```text
-<project>--sol
-<project>--luna-1
-<project>--luna-2
+<project>--brain
+<project>--worker-1
+<project>--worker-2
 ...
 ```
 
-For example, `project1--sol` and `project1--luna-1` belong to project
-`project1`; `project2--sol` and `project2--luna-1` belong to project
+For example, `project1--brain` and `project1--worker-1` belong to project
+`project1`; `project2--brain` and `project2--worker-1` belong to project
 `project2`. The two projects have separate state and queues.
 
-The existing unprefixed sessions remain the backwards-compatible `default`
-project:
+Unprefixed sessions form the `default` project:
 
 ```text
-sol
-luna-1
-luna-2
+brain
+worker-1
+worker-2
 ...
 ```
 
@@ -168,58 +196,58 @@ and single hyphens. `--` is reserved as the session separator.
 
 ## Set up one named project
 
-### 1. Sol
+### 1. Brain
 
 Open a real terminal window in the main workspace:
 
 ```bash
 cd /path/to/project
-tmux new -s project1--sol
+tmux new -s project1--brain
 codex
 ```
 
-Choose Sol Max through the normal Codex model controls. Conductor does not touch model settings.
+Choose Brain Max through the normal Codex model controls. Conductor does not touch model settings.
 
-Give Sol the protocol once, or put the relevant instructions in your own project instructions:
+Give Brain the protocol once, or put the relevant instructions in your own project instructions:
 
 ```bash
-conductor prompt sol
+conductor prompt brain
 ```
 
-The published prompt is also in [`prompts/SOL.md`](prompts/SOL.md).
+The published prompt is also in [`prompts/BRAIN.md`](prompts/BRAIN.md).
 
-### 2. Luna workers
+### 2. Worker workers
 
 Create worktrees yourself. One possible layout is:
 
 ```bash
-git worktree add ../project-luna-1 -b conductor/luna-1
-git worktree add ../project-luna-2 -b conductor/luna-2
+git worktree add ../project-worker-1 -b conductor/worker-1
+git worktree add ../project-worker-2 -b conductor/worker-2
 ```
 
 Open each worker in a separate real terminal window:
 
 ```bash
-cd ../project-luna-1
-tmux new -s project1--luna-1
+cd ../project-worker-1
+tmux new -s project1--worker-1
 codex
 ```
 
 ```bash
-cd ../project-luna-2
-tmux new -s project1--luna-2
+cd ../project-worker-2
+tmux new -s project1--worker-2
 codex
 ```
 
-Choose Luna Max in each Codex process. The optional worker protocol is available with:
+Choose Worker Max in each Codex process. The optional worker protocol is available with:
 
 ```bash
-conductor prompt luna
+conductor prompt worker
 ```
 
 Keep one Codex composer/pane per named tmux session. Although the physical
-sessions are `project1--luna-1`, `project1--luna-2`, and so on, Sol still uses
-the short logical aliases `luna-1`, `luna-2`, etc. Conductor adds the project
+sessions are `project1--worker-1`, `project1--worker-2`, and so on, Brain still uses
+the short logical aliases `worker-1`, `worker-2`, etc. Conductor adds the project
 namespace locally and does not place it in the delegated goal.
 
 ## Run several projects at once
@@ -231,34 +259,34 @@ conductor project init project2
 
 # Window 1
 cd /path/to/project1
-tmux new -s project1--sol
+tmux new -s project1--brain
 codex
 
 # Window 2
-cd /path/to/project1-luna-1
-tmux new -s project1--luna-1
+cd /path/to/project1-worker-1
+tmux new -s project1--worker-1
 codex
 
 # Window 3
 cd /path/to/project2
-tmux new -s project2--sol
+tmux new -s project2--brain
 codex
 
 # Window 4
-cd /path/to/project2-luna-1
-tmux new -s project2--luna-1
+cd /path/to/project2-worker-1
+tmux new -s project2--worker-1
 codex
 ```
 
-From `project1--sol`:
+From `project1--brain`:
 
 ```bash
-conductor goal luna-1 "Investigate the project1 task."
+conductor goal worker-1 "Investigate the project1 task."
 ```
 
-targets only `project1--luna-1`. The identical command from `project2--sol`
-targets only `project2--luna-1`. A completion in one project wakes only that
-project's Sol.
+targets only `project1--worker-1`. The identical command from `project2--brain`
+targets only `project2--worker-1`. A completion in one project wakes only that
+project's Brain.
 
 From a terminal that is not inside one of those tmux sessions, select the
 project explicitly:
@@ -269,16 +297,16 @@ conductor -p project2 inbox
 conductor status --all
 ```
 
-To run two independent Sol coordinators against the same repository, use two
+To run two independent Brain coordinators against the same repository, use two
 different project IDs, for example `project1-a` and `project1-b`, and give each
 its own worker worktrees.
 
-## Delegate from Sol
+## Delegate from Brain
 
 The safest form uses stdin, preserving multiline goals and avoiding shell quoting issues:
 
 ```bash
-cat <<'GOAL' | conductor goal luna-1 --stdin
+cat <<'GOAL' | conductor goal worker-1 --stdin
 Investigate the authentication race without changing code.
 
 In your final response give me a structured handoff containing:
@@ -292,22 +320,22 @@ GOAL
 A short goal can be passed inline:
 
 ```bash
-conductor goal luna-1 "Run the failing tests, identify the cause, and report the minimum useful handoff."
+conductor goal worker-1 "Run the failing tests, identify the cause, and report the minimum useful handoff."
 ```
 
-Delegate to several workers in the same Sol turn:
+Delegate to several workers in the same Brain turn:
 
 ```bash
-cat task-a.md | conductor goal luna-1 --stdin
-cat task-b.md | conductor goal luna-2 --stdin
-cat task-c.md | conductor goal luna-3 --stdin
+cat task-a.md | conductor goal worker-1 --stdin
+cat task-b.md | conductor goal worker-2 --stdin
+cat task-c.md | conductor goal worker-3 --stdin
 ```
 
-After delegation, Sol should end its turn and remain idle. Conductor does not ask Sol to poll the workers.
+After delegation, Brain should end its turn and remain idle. Conductor does not ask Brain to poll the workers.
 
 ## Handoffs remain free-form
 
-Sol decides the output contract in each goal.
+Brain decides the output contract in each goal.
 
 ### Tiny implementation handoff
 
@@ -333,44 +361,44 @@ worktree. In the final response give me the conclusion, critical caveats,
 and whether I should read the full file.
 ```
 
-Conductor forwards the final response exactly as Luna produced it:
+Conductor forwards the final response exactly as Worker produced it:
 
 ```text
-[CONDUCTOR HANDOFF | luna-1 | complete]
-workspace: /absolute/path/to/project-luna-1
+[CONDUCTOR HANDOFF | worker-1 | complete]
+workspace: /absolute/path/to/project-worker-1
 
-<verbatim final Luna response>
+<verbatim final Worker response>
 ```
 
 The message is not summarized, restructured, truncated, or converted to a mandatory schema.
 
 ## Wake-up and queue behavior
 
-Each worker wakes the Sol in its own project as soon as that worker finishes.
+Each worker wakes the Brain in its own project as soon as that worker finishes.
 
-- If Sol is idle, the handoff is pasted after a short safety delay.
-- If Sol is processing another handoff or a human prompt, the new handoff is queued.
-- At the next Sol `Stop`, Conductor reserves the oldest queued handoff and pastes it after a short safety delay.
-- If Sol starts another turn during that delay, the handoff is returned to the queue instead of being injected into the active turn.
-- Remaining handoffs are delivered one at a time after subsequent Sol stops.
+- If Brain is idle, the handoff is pasted after a short safety delay.
+- If Brain is processing another handoff or a human prompt, the new handoff is queued.
+- At the next Brain `Stop`, Conductor reserves the oldest queued handoff and pastes it after a short safety delay.
+- If Brain starts another turn during that delay, the handoff is returned to the queue instead of being injected into the active turn.
+- Remaining handoffs are delivered one at a time after subsequent Brain stops.
 - Busy/idle state and FIFO ordering are scoped per project, so activity in
   `project1` cannot delay or wake `project2`.
 
-There is no recurring timer loop and no model polling. The existing `_deliver` helper waits briefly for an idle Sol composer. After an ambiguous Luna `Stop`, the hook itself waits once, performs one local goal-state check, and returns.
+There is no recurring timer loop and no model polling. The existing `_deliver` helper waits briefly for an idle Brain composer. After an ambiguous Worker `Stop`, the hook itself waits once, performs one local goal-state check, and returns.
 
 ## How completion is detected
 
 The primary path uses supported Codex hooks:
 
-1. Luna receives a real `/goal`.
+1. Worker receives a real `/goal`.
 2. Codex calls `update_goal` with `complete` or `blocked`.
 3. `PostToolUse` records the confirmed terminal goal status.
 4. The following `Stop` supplies `last_assistant_message`.
-5. Conductor stores that exact message and relays it to Sol.
+5. Conductor stores that exact message and relays it to Brain.
 
-`blocked` is terminal only from Conductor's transport perspective. Conductor does not interpret the blocker; Sol decides whether to send Luna another goal, investigate, use a different worker, or ask the human.
+`blocked` is terminal only from Conductor's transport perspective. Conductor does not interpret the blocker; Brain decides whether to send Worker another goal, investigate, use a different worker, or ask the human.
 
-A transcript/goal-database reader exists as a compatibility fallback. If Luna finishes a normal Codex turn and no goal lifecycle was observed, Conductor waits once and rechecks those local sources. When at least one source was readable and still contains no matching goal, it relays Luna's exact final response with status `implicit`. Any later Luna turn or real goal status cancels the check. `implicit` is a recovery signal for Sol to verify, not proof that the requested goal succeeded.
+A transcript/goal-database reader exists as a compatibility fallback. If Worker finishes a normal Codex turn and no goal lifecycle was observed, Conductor waits once and rechecks those local sources. When at least one source was readable and still contains no matching goal, it relays Worker's exact final response with status `implicit`. Any later Worker turn or real goal status cancels the check. `implicit` is a recovery signal for Brain to verify, not proof that the requested goal succeeded.
 
 Conductor never infers completion when no local goal source is available or when a source returns an actual read/query error. Manual recovery remains available with `conductor finish`.
 
@@ -378,10 +406,10 @@ Conductor never infers completion when no local goal source is available or when
 
 Codex persists `/goal` objectives with a bounded size. Conductor sends goals
 inline only up to the configured safe limit. Longer goals are written privately
-under the selected project's task directory, and Luna receives a short `/goal`
+under the selected project's task directory, and Worker receives a short `/goal`
 that points to the absolute file path.
 
-Before assigning a worker, Conductor types `/goal clear` to remove a previous persisted goal, waits briefly, then types the literal `/goal ` prefix and pastes only the objective. A bounded local pane probe confirms Codex's **Replace goal?** dialog if clearing and setting race. This prevents stale blocked/paused goals from trapping the worker while keeping large pastes on Codex's slash-command path. The objective itself is not summarized or rewritten.
+Before assigning a worker, Conductor clears the composer, types the literal `/goal ` prefix, and pastes only the objective. If a previous persisted goal exists, a bounded local pane probe confirms Codex's native **Replace goal?** dialog. This prevents stale blocked/paused goals from trapping the worker while keeping large pastes on Codex's slash-command path. The objective itself is not summarized or rewritten.
 
 This keeps the persisted objective below the Codex limit without discarding the original instructions.
 
@@ -389,15 +417,16 @@ This keeps the persisted objective below the Codex limit without discarding the 
 
 ```text
 conductor [--project NAME] init
-conductor goal <luna-N> [--stdin | --file PATH | OBJECTIVE]
+conductor goal <worker-N> [--stdin | --file PATH | OBJECTIVE]
 conductor status [--json] [--all]
-conductor inbox
-conductor finish <luna-N> [--stdin | --file PATH] [--status STATUS]
+conductor inbox [--json]
+conductor finish <worker-N> [--task-id ID] [--stdin | --file PATH] [--status STATUS]
 conductor flush [--force]
 conductor idle
 conductor hooks install|uninstall|path
-conductor prompt sol|luna
-conductor doctor
+conductor prompt brain|worker
+conductor doctor [--json]
+conductor gui snapshot
 conductor project init NAME
 conductor project list
 conductor project sessions NAME
@@ -410,18 +439,18 @@ the namespace automatically.
 
 ### `goal`
 
-Creates one active local task and sends the exact Sol-authored objective as `/goal <objective>` to the selected Luna pane.
+Creates one active local task and sends the exact Brain-authored objective as `/goal <objective>` to the selected Worker pane.
 
 - `--stdin`: read the complete objective from stdin.
 - `--file PATH`: read it from a file.
 
-Conductor does not append a handoff schema or relay instruction. Sol owns the complete worker contract.
+Conductor does not append a handoff schema or relay instruction. Brain owns the complete worker contract.
 
-Only one active Conductor task is allowed per Luna session.
+Only one active Conductor task is allowed per Worker session.
 
 ### `status`
 
-Shows the current project's Sol state, recent tasks, workers, errors, and
+Shows the current project's Brain state, recent tasks, workers, errors, and
 pending handoffs. `--json` exposes that project's full local state;
 `--all` shows every initialized project.
 
@@ -429,8 +458,8 @@ pending handoffs. `--json` exposes that project's full local state;
 
 - `project init NAME` creates isolated state for a named project and prints its
   session convention;
-- `project list` lists initialized projects and Sol sessions;
-- `project sessions NAME` prints the expected Sol/Luna names without changing
+- `project list` lists initialized projects and Brain sessions;
+- `project sessions NAME` prints the expected Brain/Worker names without changing
   agent state.
 
 ### `inbox`
@@ -442,18 +471,18 @@ Lists pending handoffs in FIFO order without delivering them.
 Manual recovery when a Codex hook was unavailable or missed completion:
 
 ```bash
-cat handoff.md | conductor finish luna-1 --stdin --status complete
+cat handoff.md | conductor finish worker-1 --stdin --status complete
 ```
 
 When no explicit message is provided, Conductor tries the most recently cached assistant message for that active worker task. Passing `--stdin` or `--file` is safer when exact content matters.
 
 ### `flush`
 
-Delivers the oldest pending handoff when Sol is idle. `--force` clears Conductor's local Sol-busy marker first; use it only after visually confirming that Sol is at an empty composer.
+Delivers the oldest pending handoff when Brain is idle. `--force` clears Conductor's local Brain-busy marker first; use it only after visually confirming that Brain is at an empty composer.
 
 ### `idle`
 
-Resets only Conductor's local Sol activity/reservation state. It never changes Codex context or session state.
+Resets only Conductor's local Brain activity/reservation state. It never changes Codex context or session state.
 
 ### `hooks`
 
@@ -472,17 +501,22 @@ Important defaults:
 
 ```json
 {
-  "sol_session": "sol",
-  "worker_session_pattern": "^luna-[1-9][0-9]*$",
+  "brain_session": "brain",
+  "worker_session_pattern": "^worker-[1-9][0-9]*$",
   "delivery_delay_ms": 180,
   "inline_goal_max_chars": 3500,
   "terminal_goal_statuses": ["complete", "blocked"]
 }
 ```
 
-`sol_session` and `worker_session_pattern` configure the backwards-compatible
-`default` project. Named projects always use `<project>--sol` and
-`<project>--luna-N`, keeping routing deterministic without a registry.
+`brain_session` and `worker_session_pattern` configure the `default` project.
+Named projects always use `<project>--brain` and
+`<project>--worker-N`, keeping routing deterministic without a registry.
+
+Version 0.3 uses config and state schema 2 for the Brain/Worker protocol. It
+intentionally does not load version 1 runtime data. Before installing 0.3,
+move the previous `~/.conductor` directory aside if you want to retain it as an
+archive, then let `conductor init` create a clean runtime.
 
 `CONDUCTOR_HOME` can relocate all Conductor state for testing or isolation.
 
@@ -532,12 +566,12 @@ Detailed recovery steps are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.
 Common recovery:
 
 ```bash
-# Sol is visually idle, but Conductor believes it is busy
+# Brain is visually idle, but Conductor believes it is busy
 conductor idle
 conductor flush
 
 # A worker finished but automatic/implicit recovery was unavailable
-cat final-handoff.md | conductor finish luna-1 --stdin --status complete
+cat final-handoff.md | conductor finish worker-1 --stdin --status complete
 
 # Hooks point to an old binary path
 conductor hooks uninstall

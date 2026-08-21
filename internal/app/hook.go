@@ -32,7 +32,7 @@ type roleKind int
 
 const (
 	roleUnknown roleKind = iota
-	roleSol
+	roleBrain
 	roleWorker
 )
 
@@ -60,8 +60,8 @@ func (a *App) HandleHook(kind string, input HookInput) error {
 	case "post-tool-use":
 		return a.handlePostToolUse(role, input)
 	case "stop":
-		if role.Kind == roleSol {
-			return a.handleSolStop(role, input)
+		if role.Kind == roleBrain {
+			return a.handleBrainStop(role, input)
 		}
 		if role.Kind == roleWorker {
 			return a.handleWorkerStop(role, input)
@@ -183,8 +183,8 @@ func findGoalStatus(value any) (string, bool) {
 
 func (a *App) resolveRole(input HookInput) resolvedRole {
 	if session, pane, err := a.Tmux.CurrentSession(); err == nil {
-		if session == a.SolSession {
-			return resolvedRole{Kind: roleSol, Session: session, Pane: pane}
+		if session == a.BrainSession {
+			return resolvedRole{Kind: roleBrain, Session: session, Pane: pane}
 		}
 		if a.IsWorkerSession(session) {
 			return resolvedRole{Kind: roleWorker, Session: session, Pane: pane}
@@ -194,8 +194,8 @@ func (a *App) resolveRole(input HookInput) resolvedRole {
 	if err != nil {
 		return resolvedRole{}
 	}
-	if input.SessionID != "" && input.SessionID == st.Sol.CodexSessionID {
-		return resolvedRole{Kind: roleSol, Session: st.Sol.Session, Pane: st.Sol.Pane}
+	if input.SessionID != "" && input.SessionID == st.Brain.CodexSessionID {
+		return resolvedRole{Kind: roleBrain, Session: st.Brain.Session, Pane: st.Brain.Pane}
 	}
 	for session, worker := range st.Workers {
 		if input.SessionID != "" && input.SessionID == worker.CodexSessionID {
@@ -207,8 +207,8 @@ func (a *App) resolveRole(input HookInput) resolvedRole {
 			return resolvedRole{Kind: roleWorker, Session: task.WorkerSession, Pane: task.WorkerPane}
 		}
 	}
-	if pathContains(st.Sol.CWD, input.CWD) && st.Sol.CWD != "" {
-		return resolvedRole{Kind: roleSol, Session: st.Sol.Session, Pane: st.Sol.Pane}
+	if pathContains(st.Brain.CWD, input.CWD) && st.Brain.CWD != "" {
+		return resolvedRole{Kind: roleBrain, Session: st.Brain.Session, Pane: st.Brain.Pane}
 	}
 	return resolvedRole{}
 }
@@ -227,13 +227,13 @@ func (a *App) handleSessionStart(role resolvedRole, input HookInput) error {
 	now := a.Now().UTC()
 	return a.Store.Update(func(st *state.State) error {
 		switch role.Kind {
-		case roleSol:
-			st.Sol.Session = role.Session
-			st.Sol.Pane = role.Pane
-			st.Sol.CodexSessionID = input.SessionID
-			st.Sol.CWD = input.CWD
-			st.Sol.Busy = false
-			st.Sol.UpdatedAt = now
+		case roleBrain:
+			st.Brain.Session = role.Session
+			st.Brain.Pane = role.Pane
+			st.Brain.CodexSessionID = input.SessionID
+			st.Brain.CWD = input.CWD
+			st.Brain.Busy = false
+			st.Brain.UpdatedAt = now
 		case roleWorker:
 			worker := st.Workers[role.Session]
 			if worker == nil {
@@ -254,14 +254,14 @@ func (a *App) handlePromptSubmit(role resolvedRole, input HookInput) error {
 	now := a.Now().UTC()
 	return a.Store.Update(func(st *state.State) error {
 		switch role.Kind {
-		case roleSol:
-			st.Sol.Session = role.Session
-			st.Sol.Pane = role.Pane
-			st.Sol.CodexSessionID = input.SessionID
-			st.Sol.CWD = input.CWD
-			st.Sol.Busy = true
-			st.Sol.TurnID = input.TurnID
-			st.Sol.UpdatedAt = now
+		case roleBrain:
+			st.Brain.Session = role.Session
+			st.Brain.Pane = role.Pane
+			st.Brain.CodexSessionID = input.SessionID
+			st.Brain.CWD = input.CWD
+			st.Brain.Busy = true
+			st.Brain.TurnID = input.TurnID
+			st.Brain.UpdatedAt = now
 		case roleWorker:
 			worker := st.Workers[role.Session]
 			if worker == nil {
@@ -285,34 +285,47 @@ func (a *App) handlePromptSubmit(role resolvedRole, input HookInput) error {
 	})
 }
 
-func (a *App) handleSolStop(role resolvedRole, input HookInput) error {
+func (a *App) handleBrainStop(role resolvedRole, input HookInput) error {
 	var deliveryID string
+	var deliveryAttempt int
 	now := a.Now().UTC()
 	if err := a.Store.Update(func(st *state.State) error {
-		if st.Sol.ReservedDelivery != "" {
-			if reserved := st.Deliveries[st.Sol.ReservedDelivery]; reserved != nil && reserved.Status == state.DeliverySending {
-				reserved.Status = state.DeliveryPending
-				reserved.LastError = "delivery reservation superseded by a later Sol stop"
+		pasting := false
+		if st.Brain.ReservedDelivery != "" {
+			if reserved := st.Deliveries[st.Brain.ReservedDelivery]; reserved != nil {
+				switch reserved.Status {
+				case state.DeliverySending:
+					reserved.Status = state.DeliveryPending
+					reserved.LastError = "delivery reservation superseded by a later Brain stop"
+					reserved.ReservedAt = time.Time{}
+				case state.DeliveryPasting:
+					pasting = true
+				}
 			}
 		}
-		st.Sol.Session = role.Session
-		st.Sol.Pane = role.Pane
-		st.Sol.CodexSessionID = input.SessionID
-		st.Sol.CWD = input.CWD
-		st.Sol.Busy = false
-		st.Sol.TurnID = ""
-		st.Sol.ReservedDelivery = ""
-		st.Sol.UpdatedAt = now
-		if delivery := reserveOldestDelivery(st, now); delivery != nil {
-			deliveryID = delivery.ID
+		st.Brain.Session = role.Session
+		st.Brain.Pane = role.Pane
+		st.Brain.CodexSessionID = input.SessionID
+		st.Brain.CWD = input.CWD
+		st.Brain.Busy = false
+		st.Brain.TurnID = ""
+		if !pasting {
+			st.Brain.ReservedDelivery = ""
+		}
+		st.Brain.UpdatedAt = now
+		if !pasting {
+			if delivery := reserveOldestDelivery(st, now); delivery != nil {
+				deliveryID = delivery.ID
+				deliveryAttempt = delivery.Attempts
+			}
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
 	if deliveryID != "" {
-		if err := a.SpawnDelivery(deliveryID, time.Duration(a.Config.DeliveryDelayMS)*time.Millisecond); err != nil {
-			a.releaseDelivery(deliveryID, err)
+		if err := a.SpawnDelivery(deliveryID, deliveryAttempt, time.Duration(a.Config.DeliveryDelayMS)*time.Millisecond); err != nil {
+			a.releaseDeliveryLease(deliveryID, deliveryAttempt, err)
 			return err
 		}
 	}
@@ -380,7 +393,7 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 	if found && a.isTerminalGoalStatus(goalEvent.Status) {
 		finalMessage := message
 		if finalMessage == "" {
-			finalMessage = "(Luna produced no final assistant message.)"
+			finalMessage = "(Worker produced no final assistant message.)"
 		}
 		observedAt := goalEvent.Timestamp
 		if observedAt.IsZero() {
@@ -475,7 +488,7 @@ func (a *App) isTerminalGoalStatus(status string) bool {
 }
 
 func reserveOldestDelivery(st *state.State, now time.Time) *state.Delivery {
-	if st.Sol.Busy || st.Sol.ReservedDelivery != "" {
+	if st.Brain.Busy || st.Brain.ReservedDelivery != "" {
 		return nil
 	}
 	pending := state.PendingDeliveries(st)
@@ -494,8 +507,8 @@ func reserveDelivery(st *state.State, id string, now time.Time) *state.Delivery 
 	delivery.ReservedAt = now
 	delivery.Attempts++
 	delivery.LastError = ""
-	st.Sol.Busy = true
-	st.Sol.ReservedDelivery = id
-	st.Sol.UpdatedAt = now
+	st.Brain.Busy = true
+	st.Brain.ReservedDelivery = id
+	st.Brain.UpdatedAt = now
 	return delivery
 }

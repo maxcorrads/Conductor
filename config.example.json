@@ -1,10 +1,9 @@
 {
-  "version": 1,
-  "sol_session": "sol",
-  "worker_session_pattern": "^luna-[1-9][0-9]*$",
+  "version": 2,
+  "brain_session": "brain",
+  "worker_session_pattern": "^worker-[1-9][0-9]*$",
   "tmux_command": "tmux",
   "delivery_delay_ms": 180,
-  "goal_clear_delay_ms": 250,
   "goal_prefix_delay_ms": 75,
   "goal_replace_probe_ms": 1200,
   "goal_reconcile_delay_ms": 1500,

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-worker="${1:-luna-1}"
+worker="${1:-worker-1}"
 
 cat <<'GOAL' | conductor goal "$worker" --stdin
 Investigate the current failing authentication tests without modifying code.

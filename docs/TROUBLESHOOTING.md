@@ -28,8 +28,8 @@ conductor -p project1 inbox
 
 Symptoms:
 
-- tasks remain `running` after Luna finishes;
-- Sol never receives the handoff;
+- tasks remain `running` after Worker finishes;
+- Brain never receives the handoff;
 - no hook activity appears in the log/state.
 
 Check:
@@ -89,13 +89,13 @@ Review/trust the updated command in `/hooks`.
 
 The hooks installer backs up the previous file next to `hooks.json` before writing.
 
-## Luna finished, but the local task is still running
+## Worker finished, but the local task is still running
 
 Use explicit recovery so the exact message is unambiguous:
 
 ```bash
-cat <<'HANDOFF' | conductor finish luna-1 --stdin --status complete
-<copy Luna's final response here>
+cat <<'HANDOFF' | conductor finish worker-1 --stdin --status complete
+<copy Worker's final response here>
 HANDOFF
 ```
 
@@ -103,35 +103,35 @@ HANDOFF
 
 With no explicit content, it tries the last assistant message cached from an earlier worker `Stop`; that can be an intermediate response, so explicit input is safer.
 
-## Sol is visually idle, but the handoff remains queued
+## Brain is visually idle, but the handoff remains queued
 
 ```bash
 conductor idle
 conductor flush
 ```
 
-`idle` resets Conductor's local Sol activity state only. It does not touch Codex.
+`idle` resets Conductor's local Brain activity state only. It does not touch Codex.
 
-## `flush` says Sol is busy
+## `flush` says Brain is busy
 
-Visually inspect the Sol terminal. When it is definitely at an empty composer:
+Visually inspect the Brain terminal. When it is definitely at an empty composer:
 
 ```bash
 conductor flush --force
 ```
 
-Do not force delivery while Sol is generating or while you have an unsent draft in the composer.
+Do not force delivery while Brain is generating or while you have an unsent draft in the composer.
 
 ## A handoff was pasted into the wrong pane
 
 Conductor targets the active pane in the named session. Use one Codex pane per
-Sol/Luna tmux session.
+Brain/Worker tmux session.
 
 Inspect:
 
 ```bash
-tmux list-panes -t project1--sol -F '#{pane_id} #{pane_active} #{pane_current_path} #{pane_current_command}'
-tmux list-panes -t project1--luna-1 -F '#{pane_id} #{pane_active} #{pane_current_path} #{pane_current_command}'
+tmux list-panes -t project1--brain -F '#{pane_id} #{pane_active} #{pane_current_path} #{pane_current_command}'
+tmux list-panes -t project1--worker-1 -F '#{pane_id} #{pane_active} #{pane_current_path} #{pane_current_command}'
 ```
 
 Create separate tmux sessions rather than several Codex panes under one session name.
@@ -149,33 +149,33 @@ conductor status
 
 The tmux transport test suite covers multiline buffer loading and Enter submission, but terminal/TUI key handling can vary by version.
 
-## Luna is stuck at `Replace goal?`
+## Worker is stuck at `Replace goal?`
 
-Codex asks for confirmation when a previous goal is still `active`, `paused`, `blocked`, usage-limited, or budget-limited. Conductor clears the previous persisted goal before each new assignment and briefly probes the visible tmux pane for the exact replacement dialog. If the clear and set race, it confirms **Replace current goal** automatically.
+Codex asks for confirmation when a previous goal is still `active`, `paused`, `blocked`, usage-limited, or budget-limited. Conductor briefly probes the visible tmux pane for the exact replacement dialog and confirms **Replace current goal** automatically.
 
-For a session already stuck on the dialog, press Enter once to accept the selected replacement. Alternatively press Escape, run `/goal clear`, and resend the assignment. Then verify the installed version:
+For a session already stuck on the dialog, press Enter once to accept the selected replacement. Alternatively press Escape, clear the goal from Codex's Goal progress controls, and resend the assignment. Then verify the installed version:
 
 ```bash
 conductor version
 ```
 
-The timing knobs are `goal_clear_delay_ms`, `goal_prefix_delay_ms`, and `goal_replace_probe_ms` in `~/.conductor/config.json`. Increase them only when a consistently slow machine still reproduces the issue.
+The timing knobs are `goal_prefix_delay_ms` and `goal_replace_probe_ms` in `~/.conductor/config.json`. Increase them only when a consistently slow machine still reproduces the issue.
 
-## Luna receives literal `/goal ...` as an ordinary message
+## Worker receives literal `/goal ...` as an ordinary message
 
 Conductor deliberately types `/goal ` first and pastes only the objective,
 because a large whole-command paste can be treated as ordinary user text by
 some Codex TUI versions. Confirm you are running a build containing this recovery logic or a current
-source build, then retry after clearing the Luna composer.
+source build, then retry after clearing the Worker composer.
 
 ```bash
 conductor version
 conductor status
 ```
 
-Also verify that `/goal` is available in Luna's slash-command menu.
+Also verify that `/goal` is available in Worker's slash-command menu.
 
-When Codex nevertheless handles the assignment as a normal prompt, the worker's `Stop` schedules one delayed local recheck. If no real goal ever appeared and Luna stayed idle, Sol receives the exact final response with status `implicit`. This in-hook check runs once; it does not poll Luna or consume model tokens.
+When Codex nevertheless handles the assignment as a normal prompt, the worker's `Stop` schedules one delayed local recheck. If no real goal ever appeared and Worker stayed idle, Brain receives the exact final response with status `implicit`. This in-hook check runs once; it does not poll Worker or consume model tokens.
 
 ## A worker session is missing
 
@@ -186,33 +186,33 @@ tmux list-sessions
 Start the exact expected name:
 
 ```bash
-tmux new -s project1--luna-1
+tmux new -s project1--worker-1
 ```
 
-Inside `project1--sol`, `conductor goal luna-1 ...` resolves to that physical
-session. The default project still expects unprefixed `luna-1`. Run
+Inside `project1--brain`, `conductor goal worker-1 ...` resolves to that physical
+session. The default project still expects unprefixed `worker-1`. Run
 `conductor project sessions project1` when unsure.
 
 Worker aliases accept positive integer suffixes only.
 
-## A handoff went to another project's Sol
+## A handoff went to another project's Brain
 
 This should not occur when all sessions follow the naming convention. Check
-that Sol and Luna share the exact prefix before `--` and inspect all states:
+that Brain and Worker share the exact prefix before `--` and inspect all states:
 
 ```bash
 tmux list-sessions
 conductor status --all
 ```
 
-Do not mix `project1--sol` with an unprefixed `luna-1`; that worker belongs to
-the `default` project. The matching worker is `project1--luna-1`.
+Do not mix `project1--brain` with an unprefixed `worker-1`; that worker belongs to
+the `default` project. The matching worker is `project1--worker-1`.
 
 ## A long goal is rejected
 
 Conductor normally stores long objectives in a private file and sends a short path-based `/goal`. Confirm `inline_goal_max_chars` is no higher than 3900 in `~/.conductor/config.json`.
 
-If Luna cannot read the private goal file under the active sandbox, either grant read access to the configured `CONDUCTOR_HOME` or place the detailed instructions in a file inside Luna's worktree and delegate a short goal that references it.
+If Worker cannot read the private goal file under the active sandbox, either grant read access to the configured `CONDUCTOR_HOME` or place the detailed instructions in a file inside Worker's worktree and delegate a short goal that references it.
 
 ## Goal database or transcript errors
 

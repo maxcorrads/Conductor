@@ -61,7 +61,7 @@ mkdir -p "$CONDUCTOR_HOME" && chmod 700 "$CONDUCTOR_HOME"
 conductor init
 ```
 
-Set the same environment variable before launching every Sol/Luna Codex
+Set the same environment variable before launching every Brain/Worker Codex
 process across all projects. This state is intentionally disposable.
 Alternatively, keep `~/.conductor` and approve or configure the narrow local
 permission required by the `conductor` command.
@@ -79,34 +79,48 @@ use a deterministic tmux namespace and isolated state.
 
 ```bash
 cd /path/to/main-workspace
-tmux new -s project1--sol
+tmux new -s project1--brain
 codex
 ```
 
 In a separate worktree and terminal:
 
 ```bash
-cd /path/to/luna-worktree
-tmux new -s project1--luna-1
+cd /path/to/worker-worktree
+tmux new -s project1--worker-1
 codex
 ```
 
-Inside `project1--sol`, delegate with the short alias:
+Inside `project1--brain`, delegate with the short alias:
 
 ```bash
-conductor goal luna-1 "..."
+conductor goal worker-1 "..."
 ```
 
 For a second simultaneous project, repeat with another prefix such as
-`project2--sol` and `project2--luna-1`. See
+`project2--brain` and `project2--worker-1`. See
 [`MULTI_PROJECT.md`](MULTI_PROJECT.md).
 
 ## Upgrade
 
-Run the new release installer. It replaces the binary and ensures the hook
-definitions point to that installed path. Existing `sol`/`luna-N` state remains
-the `default` project; no migration is required. Review `/hooks` again if Codex
-marks the changed definition untrusted.
+Version 0.3 is a clean protocol reset and does not migrate version 1 runtime
+data. Before running the installer, move the previous Conductor home aside so
+the operation starts from an empty path:
+
+```bash
+mv "${CONDUCTOR_HOME:-$HOME/.conductor}" \
+  "${CONDUCTOR_HOME:-$HOME/.conductor}.pre-0.3-$(date +%Y%m%d-%H%M%S)"
+./scripts/install.sh
+```
+
+The installer refuses to replace the current binary when it detects version 1
+configuration or state, preventing a partial upgrade. It then installs the new
+binary, initializes schema 2, and updates the hook definitions. Review `/hooks`
+again if Codex marks the changed definition untrusted.
+
+The installer also compares semantic versions before replacement. An equal or
+newer installed CLI is kept; invalid or incomparable version output stops the
+operation without changing the installed binary.
 
 ## Uninstall
 

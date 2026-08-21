@@ -80,6 +80,22 @@ func TestLatestGoalEventRejectsMismatchedObjectiveInSameThread(t *testing.T) {
 	}
 }
 
+func TestLatestGoalEventForThreadExposesMismatchedObjective(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	content := `{"timestamp":"2026-08-20T11:00:00Z","type":"event_msg","payload":{"type":"thread_goal_updated","threadId":"thr-1","goal":{"objective":"unexpected goal","status":"active"}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	event, found, err := LatestGoalEventForThread(path, "thr-1", time.Time{}, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || event.Objective != "unexpected goal" || event.Status != "active" {
+		t.Fatalf("got found=%v event=%+v", found, event)
+	}
+}
+
 func TestLatestGoalEventReadsTailOfLargeFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rollout.jsonl")

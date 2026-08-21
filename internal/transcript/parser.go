@@ -87,6 +87,47 @@ func LatestGoalEvent(path, sessionID, expectedObjective string, since time.Time,
 	return GoalEvent{}, false, nil
 }
 
+// LatestGoalEventForThread returns the newest persisted goal associated with a
+// thread without filtering by objective. It lets callers distinguish a truly
+// absent goal from a different active goal that must not be treated as an
+// implicit completion of the current task.
+func LatestGoalEventForThread(path, sessionID string, since time.Time, maxBytes int64) (GoalEvent, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return GoalEvent{}, false, nil
+	}
+	if maxBytes <= 0 {
+		maxBytes = 32 * 1024 * 1024
+	}
+	lines, err := readTailLines(path, maxBytes)
+	if err != nil {
+		return GoalEvent{}, false, err
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		var root any
+		dec := json.NewDecoder(bytes.NewReader(line))
+		dec.UseNumber()
+		if err := dec.Decode(&root); err != nil {
+			continue
+		}
+		timestamp := findTimestamp(root)
+		if !since.IsZero() && !timestamp.IsZero() && timestamp.Before(since.Add(-2*time.Second)) {
+			continue
+		}
+		for _, candidate := range findGoalEvents(root, timestamp) {
+			if sessionID != "" && candidate.ThreadID != "" && candidate.ThreadID != sessionID {
+				continue
+			}
+			candidate.Source = "transcript"
+			return candidate, true, nil
+		}
+	}
+	return GoalEvent{}, false, nil
+}
+
 func GoalStatusFromSQLite(sessionID string) (GoalEvent, bool, error) {
 	event, found, _, err := GoalStatusFromSQLiteChecked(sessionID)
 	return event, found, err

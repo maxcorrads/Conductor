@@ -1,13 +1,16 @@
 SHELL := /bin/bash
 
-VERSION ?= 0.2.1
+VERSION ?= 0.3.0
 BINARY := conductor
 PKG := ./cmd/conductor
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all fmt fmt-check test vet race build dist checksums package verify-package release clean
+.PHONY: all print-version fmt fmt-check test vet race test-installer build dist checksums package verify-package app release clean
 
 all: build
+
+print-version:
+	@printf '%s\n' "$(VERSION)"
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -type f)
@@ -23,6 +26,11 @@ vet:
 
 race:
 	go test -race ./...
+
+test-installer:
+	sh scripts/test-semver.sh
+	sh scripts/test-install-version.sh
+	@if [ "$$(uname -s)" = "Darwin" ]; then sh scripts/test-runtime-json.sh; fi
 
 build:
 	mkdir -p build
@@ -56,7 +64,10 @@ verify-package: package
 		}; \
 	done
 
-release: fmt-check test vet race verify-package
+app:
+	VERSION=$(VERSION) ./scripts/build-macos-app.sh
+
+release: fmt-check test vet race test-installer verify-package
 
 clean:
 	rm -rf build dist release

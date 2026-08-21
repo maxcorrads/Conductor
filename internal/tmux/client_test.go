@@ -15,9 +15,9 @@ func TestExecClientSendsPromptThroughBuffer(t *testing.T) {
 set -eu
 case "$1" in
   -V) echo "tmux 3.4" ;;
-  display-message) printf 'sol\t%%0\n' ;;
-  list-panes) printf '%%1\tluna-1\t1\t/tmp/worktree\tcodex\n' ;;
-  list-sessions) printf 'sol\nluna-1\n' ;;
+  display-message) printf 'brain\t%%0\n' ;;
+  list-panes) printf '%%1\tworker-1\t1\t/tmp/worktree\tcodex\n' ;;
+  list-sessions) printf 'brain\nworker-1\n' ;;
   has-session) exit 0 ;;
   load-buffer) cat > "$FAKE_TMUX_DIR/payload"; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
@@ -47,7 +47,7 @@ esac
 	}
 }
 
-func TestExecClientClearsGoalAndSendsPrefixSeparatelyFromPastedObjective(t *testing.T) {
+func TestExecClientSendsGoalPrefixSeparatelyFromPastedObjective(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "tmux")
 	body := `#!/bin/sh
@@ -84,9 +84,6 @@ esac
 	want := []string{
 		"capture-pane -p -J -t %1",
 		"send-keys -t %1 C-u",
-		"send-keys -t %1 -l /goal clear",
-		"send-keys -t %1 Enter",
-		"send-keys -t %1 C-u",
 		"send-keys -t %1 -l /goal ",
 	}
 	if len(lines) < len(want)+3 {
@@ -97,11 +94,11 @@ esac
 			t.Fatalf("call %d\nwant: %q\n got: %q\nall: %s", i, expected, lines[i], calls)
 		}
 	}
-	if !strings.HasPrefix(lines[6], "load-buffer ") || !strings.HasPrefix(lines[7], "paste-buffer ") {
+	if !strings.HasPrefix(lines[3], "load-buffer ") || !strings.HasPrefix(lines[4], "paste-buffer ") {
 		t.Fatalf("objective was not pasted after prefix: %s", calls)
 	}
-	if lines[8] != "send-keys -t %1 Enter" {
-		t.Fatalf("Enter not sent last: %q", lines[8])
+	if lines[5] != "send-keys -t %1 Enter" {
+		t.Fatalf("Enter not sent last: %q", lines[5])
 	}
 }
 
@@ -142,8 +139,8 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(calls), "send-keys -t %1 Enter\n"); got != 3 {
-		t.Fatalf("expected clear submit, goal submit, and replacement confirmation; got %d\n%s", got, calls)
+	if got := strings.Count(string(calls), "send-keys -t %1 Enter\n"); got != 2 {
+		t.Fatalf("expected goal submit and replacement confirmation; got %d\n%s", got, calls)
 	}
 }
 
@@ -193,7 +190,7 @@ func TestResolvePane(t *testing.T) {
 	script := filepath.Join(dir, "tmux")
 	body := `#!/bin/sh
 if [ "$1" = list-panes ]; then
-  printf '%%1\tluna-1\t0\t/tmp/one\tzsh\n%%2\tluna-1\t1\t/tmp/two\tcodex\n'
+  printf '%%1\tworker-1\t0\t/tmp/one\tzsh\n%%2\tworker-1\t1\t/tmp/two\tcodex\n'
 else
   exit 1
 fi
@@ -201,7 +198,7 @@ fi
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	pane, err := New(script).ResolvePane("luna-1")
+	pane, err := New(script).ResolvePane("worker-1")
 	if err != nil {
 		t.Fatal(err)
 	}

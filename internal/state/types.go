@@ -2,7 +2,7 @@ package state
 
 import "time"
 
-const CurrentVersion = 1
+const CurrentVersion = 2
 
 const (
 	TaskRunning   = "running"
@@ -12,6 +12,7 @@ const (
 
 	DeliveryPending   = "pending"
 	DeliverySending   = "sending"
+	DeliveryPasting   = "pasting"
 	DeliveryDelivered = "delivered"
 )
 
@@ -83,24 +84,24 @@ type Delivery struct {
 type State struct {
 	Version    int                  `json:"version"`
 	ProjectID  string               `json:"project_id,omitempty"`
-	Sol        Activity             `json:"sol"`
+	Brain      Activity             `json:"brain"`
 	Workers    map[string]*Worker   `json:"workers"`
 	Tasks      map[string]*Task     `json:"tasks"`
 	Deliveries map[string]*Delivery `json:"deliveries"`
 }
 
-func New(solSession string) State {
-	return NewForProject("default", solSession)
+func New(brainSession string) State {
+	return NewForProject("default", brainSession)
 }
 
-func NewForProject(projectID, solSession string) State {
+func NewForProject(projectID, brainSession string) State {
 	if projectID == "" {
 		projectID = "default"
 	}
 	return State{
 		Version:    CurrentVersion,
 		ProjectID:  projectID,
-		Sol:        Activity{Session: solSession},
+		Brain:      Activity{Session: brainSession},
 		Workers:    map[string]*Worker{},
 		Tasks:      map[string]*Task{},
 		Deliveries: map[string]*Delivery{},

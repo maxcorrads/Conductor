@@ -21,7 +21,7 @@ import (
 	"github.com/maxcorrads/conductor/internal/state"
 )
 
-var version = "0.2.1"
+var version = "0.3.0"
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "hook" {
@@ -63,6 +63,8 @@ func run(args []string) error {
 		return runPrompt(args[1:])
 	case "project", "projects":
 		return runProject(args)
+	case "gui":
+		return runGUI(args[1:])
 	}
 	var a *app.App
 	if projectID == "" {
@@ -91,15 +93,15 @@ func run(args []string) error {
 	case "flush":
 		return runFlush(a, args[1:])
 	case "idle":
-		if err := a.MarkSolIdle(); err != nil {
+		if err := a.MarkBrainIdle(); err != nil {
 			return err
 		}
-		fmt.Printf("Sol for %s marked idle; any stale delivery reservation was returned to the queue.\n", a.ProjectID)
+		fmt.Printf("Brain for %s marked idle; any stale delivery reservation was returned to the queue.\n", a.ProjectID)
 		return nil
 	case "hooks":
 		return runHooks(a, args[1:])
 	case "doctor":
-		return runDoctor(a)
+		return runDoctor(a, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q (run conductor help)", args[0])
 	}
@@ -107,7 +109,7 @@ func run(args []string) error {
 
 func runGoal(a *app.App, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: conductor goal <luna-N> [--stdin | --file PATH | OBJECTIVE]")
+		return errors.New("usage: conductor goal <worker-N> [--stdin | --file PATH | OBJECTIVE]")
 	}
 	worker := args[0]
 	payload, err := parsePayload(args[1:])
@@ -159,14 +161,27 @@ func runStatus(a *app.App, args []string) error {
 }
 
 func runInbox(a *app.App, args []string) error {
-	if len(args) > 0 {
-		return errors.New("usage: conductor inbox")
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+		} else {
+			return fmt.Errorf("unknown inbox option %q", arg)
+		}
 	}
 	st, err := a.Store.Read()
 	if err != nil {
 		return err
 	}
 	pending := state.PendingDeliveries(&st)
+	if jsonOutput {
+		data, marshalErr := json.MarshalIndent(map[string]any{"handoffs": pending}, "", "  ")
+		if marshalErr != nil {
+			return marshalErr
+		}
+		fmt.Println(string(data))
+		return nil
+	}
 	if len(pending) == 0 {
 		fmt.Println("No pending handoffs.")
 		return nil
@@ -183,10 +198,11 @@ func runInbox(a *app.App, args []string) error {
 
 func runFinish(a *app.App, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: conductor finish <luna-N> [--stdin | --file PATH] [--status STATUS]")
+		return errors.New("usage: conductor finish <worker-N> [--task-id ID] [--stdin | --file PATH] [--status STATUS]")
 	}
 	worker := args[0]
 	status := "manual"
+	expectedTaskID := ""
 	var payloadArgs []string
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
@@ -202,6 +218,18 @@ func runFinish(a *app.App, args []string) error {
 			status = strings.TrimPrefix(arg, "--status=")
 			continue
 		}
+		if arg == "--task-id" {
+			if i+1 >= len(args) {
+				return errors.New("--task-id requires a value")
+			}
+			expectedTaskID = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--task-id=") {
+			expectedTaskID = strings.TrimPrefix(arg, "--task-id=")
+			continue
+		}
 		payloadArgs = append(payloadArgs, arg)
 	}
 	message := ""
@@ -212,7 +240,7 @@ func runFinish(a *app.App, args []string) error {
 			return err
 		}
 	}
-	id, err := a.FinishWorker(worker, message, status)
+	id, err := a.FinishWorkerTask(worker, expectedTaskID, message, status)
 	if err != nil {
 		return err
 	}
@@ -289,69 +317,107 @@ func runHooks(a *app.App, args []string) error {
 
 func runPrompt(args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: conductor prompt sol|luna")
+		return errors.New("usage: conductor prompt brain|worker")
 	}
 	switch args[0] {
-	case "sol":
-		fmt.Print(app.SolPrompt)
-	case "luna":
-		fmt.Print(app.LunaPrompt)
+	case "brain":
+		fmt.Print(app.BrainPrompt)
+	case "worker":
+		fmt.Print(app.WorkerPrompt)
 	default:
-		return errors.New("usage: conductor prompt sol|luna")
+		return errors.New("usage: conductor prompt brain|worker")
 	}
 	return nil
 }
 
-func runDoctor(a *app.App) error {
-	type check struct {
-		name, value string
-		ok          bool
-	}
-	checks := []check{{"project", a.ProjectID, true}, {"platform", runtime.GOOS + "/" + runtime.GOARCH, runtime.GOOS == "darwin"}}
-	if path, err := exec.LookPath(a.Config.TmuxCommand); err == nil {
-		version, versionErr := a.Tmux.Version()
-		checks = append(checks, check{"tmux", path + " (" + version + ")", versionErr == nil})
-	} else {
-		checks = append(checks, check{"tmux", "not found", false})
-	}
-	if path, err := exec.LookPath("codex"); err == nil {
-		out, versionErr := exec.Command(path, "--version").CombinedOutput()
-		checks = append(checks, check{"codex", path + " (" + strings.TrimSpace(string(out)) + ")", versionErr == nil})
-	} else {
-		checks = append(checks, check{"codex", "not found", false})
-	}
-	installed, hooksPath, hooksErr := hookinstall.Installed(a.Executable)
-	checks = append(checks, check{"hooks", hooksPath, hooksErr == nil && installed})
-	checks = append(checks, check{"config", a.Paths.Config, fileExists(a.Paths.Config)})
+type doctorCheck struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	OK    bool   `json:"ok"`
+}
 
-	sessions, sessionErr := a.Tmux.ListSessions()
-	if sessionErr != nil {
-		checks = append(checks, check{"tmux sessions", sessionErr.Error(), false})
-	} else {
-		sort.Strings(sessions)
-		checks = append(checks, check{"tmux sessions", strings.Join(sessions, ", "), contains(sessions, a.SolSession)})
-	}
-	goalState := detectCodexFeature("goals")
-	checks = append(checks, check{"Codex goals", goalState, strings.HasPrefix(goalState, "enabled")})
-	hooksState := detectCodexFeature("hooks")
-	checks = append(checks, check{"Codex hooks", hooksState, strings.HasPrefix(hooksState, "enabled")})
+type doctorReport struct {
+	Checks          []doctorCheck `json:"checks"`
+	CriticalFailure bool          `json:"critical_failure"`
+	Note            string        `json:"note"`
+}
 
-	criticalFailure := false
-	for _, c := range checks {
+func runDoctor(a *app.App, args []string) error {
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+		} else {
+			return fmt.Errorf("unknown doctor option %q", arg)
+		}
+	}
+	report := collectDoctorReport(a)
+	if jsonOutput {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		if report.CriticalFailure {
+			return errors.New("doctor found missing required setup")
+		}
+		return nil
+	}
+	for _, c := range report.Checks {
 		mark := "OK"
-		if !c.ok {
+		if !c.OK {
 			mark = "WARN"
 		}
-		fmt.Printf("%-5s %-15s %s\n", mark, c.name, c.value)
-		if (c.name == "tmux" || c.name == "codex" || c.name == "hooks" || c.name == "Codex goals" || c.name == "Codex hooks") && !c.ok {
-			criticalFailure = true
-		}
+		fmt.Printf("%-5s %-15s %s\n", mark, c.Name, c.Value)
 	}
-	fmt.Println("NOTE  Hook trust cannot be verified automatically; inspect /hooks inside Codex.")
-	if criticalFailure {
+	fmt.Println("NOTE ", report.Note)
+	if report.CriticalFailure {
 		return errors.New("doctor found missing required setup")
 	}
 	return nil
+}
+
+func collectDoctorReport(a *app.App) doctorReport {
+	checks := []doctorCheck{{"project", a.ProjectID, true}, {"platform", runtime.GOOS + "/" + runtime.GOARCH, runtime.GOOS == "darwin"}}
+	if path, err := exec.LookPath(a.Config.TmuxCommand); err == nil {
+		version, versionErr := a.Tmux.Version()
+		checks = append(checks, doctorCheck{"tmux", path + " (" + version + ")", versionErr == nil})
+	} else {
+		checks = append(checks, doctorCheck{"tmux", "not found", false})
+	}
+	if path, err := exec.LookPath("codex"); err == nil {
+		out, versionErr := exec.Command(path, "--version").CombinedOutput()
+		checks = append(checks, doctorCheck{"codex", path + " (" + strings.TrimSpace(string(out)) + ")", versionErr == nil})
+	} else {
+		checks = append(checks, doctorCheck{"codex", "not found", false})
+	}
+	installed, hooksPath, hooksErr := hookinstall.Installed(a.Executable)
+	checks = append(checks, doctorCheck{"hooks", hooksPath, hooksErr == nil && installed})
+	checks = append(checks, doctorCheck{"config", a.Paths.Config, fileExists(a.Paths.Config)})
+
+	sessions, sessionErr := a.Tmux.ListSessions()
+	if sessionErr != nil {
+		checks = append(checks, doctorCheck{"tmux sessions", sessionErr.Error(), false})
+	} else {
+		sort.Strings(sessions)
+		checks = append(checks, doctorCheck{"tmux sessions", strings.Join(sessions, ", "), contains(sessions, a.BrainSession)})
+	}
+	goalState := detectCodexFeature("goals")
+	checks = append(checks, doctorCheck{"Codex goals", goalState, strings.HasPrefix(goalState, "enabled")})
+	hooksState := detectCodexFeature("hooks")
+	checks = append(checks, doctorCheck{"Codex hooks", hooksState, strings.HasPrefix(hooksState, "enabled")})
+
+	criticalFailure := false
+	for _, c := range checks {
+		if (c.Name == "tmux" || c.Name == "codex" || c.Name == "hooks" || c.Name == "Codex goals" || c.Name == "Codex hooks") && !c.OK {
+			criticalFailure = true
+		}
+	}
+	return doctorReport{
+		Checks:          checks,
+		CriticalFailure: criticalFailure,
+		Note:            "Hook trust cannot be verified automatically; inspect /hooks inside Codex.",
+	}
 }
 
 func runHook(args []string) {
@@ -384,10 +450,27 @@ func runInternalDeliver(args []string) error {
 	}
 	deliveryID := args[0]
 	delayMS := int64(0)
+	attempt := 0
 	projectID := ""
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--project" {
+		if arg == "--attempt" {
+			if i+1 >= len(args) {
+				return errors.New("--attempt requires a value")
+			}
+			parsed, err := strconv.Atoi(args[i+1])
+			if err != nil || parsed <= 0 {
+				return errors.New("--attempt requires a positive integer")
+			}
+			attempt = parsed
+			i++
+		} else if strings.HasPrefix(arg, "--attempt=") {
+			parsed, err := strconv.Atoi(strings.TrimPrefix(arg, "--attempt="))
+			if err != nil || parsed <= 0 {
+				return errors.New("--attempt requires a positive integer")
+			}
+			attempt = parsed
+		} else if arg == "--project" {
 			if i+1 >= len(args) {
 				return errors.New("--project requires a value")
 			}
@@ -415,6 +498,9 @@ func runInternalDeliver(args []string) error {
 			return fmt.Errorf("unknown option %q", arg)
 		}
 	}
+	if attempt <= 0 {
+		return errors.New("--attempt is required")
+	}
 	var a *app.App
 	var err error
 	if projectID == "" {
@@ -425,7 +511,7 @@ func runInternalDeliver(args []string) error {
 	if err != nil {
 		return err
 	}
-	return a.Deliver(deliveryID, time.Duration(delayMS)*time.Millisecond)
+	return a.DeliverLease(deliveryID, attempt, time.Duration(delayMS)*time.Millisecond)
 }
 
 func parsePayload(args []string) (payload string, err error) {
@@ -617,11 +703,11 @@ func runProject(args []string) error {
 
 func printProjectSessions(a *app.App) {
 	fmt.Printf("Project: %s\n", a.ProjectID)
-	fmt.Printf("Sol session: %s\n", a.SolSession)
+	fmt.Printf("Brain session: %s\n", a.BrainSession)
 	if a.ProjectID == project.DefaultID {
-		fmt.Println("Luna sessions: luna-1, luna-2, ...")
+		fmt.Println("Worker sessions: worker-1, worker-2, ...")
 	} else {
-		fmt.Printf("Luna sessions: %s--luna-1, %s--luna-2, ...\n", a.ProjectID, a.ProjectID)
+		fmt.Printf("Worker sessions: %s--worker-1, %s--worker-2, ...\n", a.ProjectID, a.ProjectID)
 	}
 	fmt.Printf("State: %s\n", a.Paths.State)
 }
@@ -636,7 +722,7 @@ func listProjects() error {
 		if appErr != nil {
 			return appErr
 		}
-		fmt.Printf("%-20s sol=%-28s state=%s\n", id, a.SolSession, a.Paths.State)
+		fmt.Printf("%-20s brain=%-28s state=%s\n", id, a.BrainSession, a.Paths.State)
 	}
 	return nil
 }
@@ -688,29 +774,30 @@ func printUsage(w io.Writer) {
 
 Usage:
   conductor [--project NAME] init
-  conductor goal <luna-N> [--stdin | --file PATH | OBJECTIVE]
+  conductor goal <worker-N> [--stdin | --file PATH | OBJECTIVE]
   conductor status [--json] [--all]
-  conductor inbox
-  conductor finish <luna-N> [--stdin | --file PATH] [--status STATUS]
+  conductor inbox [--json]
+  conductor finish <worker-N> [--task-id ID] [--stdin | --file PATH] [--status STATUS]
   conductor flush [--force]
   conductor idle
   conductor hooks install|uninstall|path
-  conductor prompt sol|luna
-  conductor doctor
+  conductor prompt brain|worker
+  conductor doctor [--json]
+  conductor gui snapshot
   conductor project init NAME
   conductor project list
   conductor project sessions NAME
   conductor version
 
 Project session convention:
-  default:  sol, luna-1, luna-2, ...
-  named:    NAME--sol, NAME--luna-1, NAME--luna-2, ...
+  default:  brain, worker-1, worker-2, ...
+  named:    NAME--brain, NAME--worker-1, NAME--worker-2, ...
 
-Inside a named Sol session, conductor goal luna-1 ... automatically targets
-NAME--luna-1. Outside tmux, select a project with --project NAME or -p NAME.
+Inside a named Brain session, conductor goal worker-1 ... automatically targets
+NAME--worker-1. Outside tmux, select a project with --project NAME or -p NAME.
 
-Typical delegation from Sol:
-  cat <<'GOAL' | conductor goal luna-1 --stdin
+Typical delegation from Brain:
+  cat <<'GOAL' | conductor goal worker-1 --stdin
   Implement the requested change. In the final handoff include tests and risks.
   GOAL
 `)

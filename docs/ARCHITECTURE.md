@@ -3,8 +3,8 @@
 ## Scope
 
 Conductor is a deterministic transport between independent, visible Codex CLI
-sessions. Each project namespace owns one Sol coordinator and any number of
-Luna workers. The human owns every terminal and all context-management
+sessions. Each project namespace owns one Brain coordinator and any number of
+Worker workers. The human owns every terminal and all context-management
 decisions.
 
 Conductor is deliberately not an agent framework.
@@ -13,18 +13,18 @@ Conductor is deliberately not an agent framework.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────┐
-│ tmux session: project1--sol                                        │
-│ Codex CLI / Sol                                                    │
+│ tmux session: project1--brain                                        │
+│ Codex CLI / Brain                                                    │
 │                                                                    │
-│ shell: conductor goal luna-1 --stdin                              │
+│ shell: conductor goal worker-1 --stdin                              │
 └──────────────────────────────┬─────────────────────────────────────┘
                                │ tmux load-buffer + paste-buffer
                                ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│ tmux session: project1--luna-1                                     │
-│ Codex CLI / Luna, separate worktree                                │
+│ tmux session: project1--worker-1                                     │
+│ Codex CLI / Worker, separate worktree                                │
 │                                                                    │
-│ /goal <Sol-authored objective>                                     │
+│ /goal <Brain-authored objective>                                     │
 └──────────────────────────────┬─────────────────────────────────────┘
                                │ Codex hooks
                                │ PostToolUse(update_goal)
@@ -35,10 +35,10 @@ Conductor is deliberately not an agent framework.
 │                                                                    │
 │ state lock → private handoff file → FIFO delivery reservation      │
 └──────────────────────────────┬─────────────────────────────────────┘
-                               │ tmux paste when Sol is idle
+                               │ tmux paste when Brain is idle
                                ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│ Sol receives minimal envelope + verbatim Luna response             │
+│ Brain receives minimal envelope + verbatim Worker response             │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,23 +46,23 @@ Conductor is deliberately not an agent framework.
 
 Every action starts from an event:
 
-- Sol explicitly invokes `conductor goal`.
+- Brain explicitly invokes `conductor goal`.
 - Codex invokes a lifecycle hook.
 - The human explicitly invokes a recovery command.
 
-After a Sol `Stop`, Conductor may start a detached one-shot `_deliver` helper. The helper sleeps for the configured short delay, verifies that Sol is still idle, sends one message, and exits.
+After a Brain `Stop`, Conductor may start a detached one-shot `_deliver` helper. The helper sleeps for the configured short delay, verifies that Brain is still idle, sends one message, and exits.
 
-An ambiguous Luna `Stop` waits once inside the hook process, then checks local transcript/database and Conductor state exactly once. Any observed goal invalidates its token. There is no reconciliation daemon or loop.
+An ambiguous Worker `Stop` waits once inside the hook process, then checks local transcript/database and Conductor state exactly once. Any observed goal invalidates its token. There is no reconciliation daemon or loop.
 
 ## Project routing
 
-Session names are the routing table. The default project uses `sol` and
-`luna-N`; a named project uses `<project>--sol` and
-`<project>--luna-N`.
+Session names are the routing table. The default project uses `brain` and
+`worker-N`; a named project uses `<project>--brain` and
+`<project>--worker-N`.
 
-When `conductor goal luna-1` runs inside `project1--sol`, the current tmux
+When `conductor goal worker-1` runs inside `project1--brain`, the current tmux
 session resolves project `project1`, and the physical worker target becomes
-`project1--luna-1`. The logical alias remains `luna-1` in command output and
+`project1--worker-1`. The logical alias remains `worker-1` in command output and
 handoffs, avoiding model-facing namespace overhead.
 
 Codex hooks use the same current-session mapping. If tmux context is missing,
@@ -75,15 +75,15 @@ Conductor persists one small JSON state per project, each guarded by its own
 advisory file lock. The default project retains `~/.conductor/state.json`;
 named projects use `~/.conductor/projects/<project>/state.json`.
 
-### Sol activity
+### Brain activity
 
-- `Busy`: whether Conductor believes Sol is in a turn or has a delivery reserved/injected.
+- `Busy`: whether Conductor believes Brain is in a turn or has a delivery reserved/injected.
 - `TurnID`: the active Codex turn id when known.
 - `ReservedDelivery`: one pending handoff currently reserved for delivery.
 
 ### Worker task
 
-One `running` task is allowed per Luna session. A task stores:
+One `running` task is allowed per Worker session. A task stores:
 
 - worker pane and workspace captured at delegation;
 - full original goal file;
@@ -98,15 +98,20 @@ One `running` task is allowed per Luna session. A task stores:
 A delivery transitions:
 
 ```text
-pending → sending → delivered
-            │
-            └──── failure/race → pending
+pending → sending → pasting → delivered
+            │          │
+            └──────────┴──── failure/race → pending
 ```
 
-A stale `sending` reservation older than two minutes is recovered to `pending` on the next locked state update.
+Each reservation increments an attempt number. A delivery helper may claim
+`pasting` only when both the reservation and attempt still match, so a
+superseded helper exits without sending. A stale `sending` or `pasting`
+reservation older than two minutes is recovered to `pending` on the next
+locked state update. Explicit recovery commands never reclaim an active
+`pasting` lease.
 
 All delivery reservations and FIFO queues are project-local. A worker in one
-project cannot reserve, delay, or wake another project's Sol.
+project cannot reserve, delay, or wake another project's Brain.
 
 ## Completion path
 
@@ -134,20 +139,20 @@ If a worker `Stop` has a final assistant message, no real goal has ever been obs
 
 `conductor finish` ends an active local worker task using explicit stdin/file content or the latest cached worker response.
 
-## Sol delivery race handling
+## Brain delivery race handling
 
-A handoff must never become an accidental steer inside an active Sol turn.
+A handoff must never become an accidental steer inside an active Brain turn.
 
-When Sol stops:
+When Brain stops:
 
-1. Sol is marked idle.
-2. The oldest pending handoff is atomically reserved.
-3. A one-shot delivery helper starts with a short delay.
-4. Before paste, it rereads state.
-5. If a new Sol `TurnID` exists, it requeues the handoff.
-6. Otherwise it resolves the current Sol pane, pastes, presses Enter, and marks the delivery complete.
+1. Brain is marked idle.
+2. The oldest pending handoff is atomically reserved with a new attempt number.
+3. A one-shot delivery helper starts with that attempt and a short delay.
+4. Before paste, it atomically claims `pasting` only if its lease is still current.
+5. If a new Brain `TurnID` exists, it requeues the handoff; a superseded helper exits.
+6. Otherwise it resolves the current Brain pane, pastes, presses Enter, and marks the delivery complete for the same lease.
 
-Worker completion uses the same reservation state. If Sol is already idle, delivery happens synchronously after the same short safety delay; no persistent helper or polling loop is started.
+Worker completion uses the same reservation state. If Brain is already idle, delivery happens synchronously after the same short safety delay; no persistent helper or polling loop is started.
 
 ## tmux transport
 
@@ -160,23 +165,23 @@ For normal handoffs, Conductor:
 3. uses `paste-buffer` in bracketed-paste mode when supported;
 4. sends one Enter key.
 
-For delegation, Conductor clears the composer, types `/goal clear`, waits briefly for Codex to persist the clear, then types the literal `/goal ` prefix with `send-keys -l`. After a second short pause it pastes only the objective and sends Enter. Keeping the slash-command prefix outside a large paste ensures Codex recognizes the command while preserving multiline objective text.
+For delegation, Conductor clears the composer and types the literal `/goal ` prefix with `send-keys -l`. After a short pause it pastes only the objective and sends Enter. Keeping the slash-command prefix outside a large paste ensures Codex recognizes the command while preserving multiline objective text. If a previous goal exists, Conductor recognizes Codex's native replacement dialog and accepts the selected replacement.
 
-A bounded local `capture-pane` probe looks for all exact **Replace goal?** markers. If clearing and setting race, it confirms the already-selected **Replace current goal** action. The probe has a deadline, sends no prompt to a model, and stops immediately after confirmation.
+A bounded local `capture-pane` probe looks for all exact **Replace goal?** markers. If a previous persisted goal triggers that dialog, it confirms the already-selected **Replace current goal** action. The probe has a deadline, sends no prompt to a model, and stops immediately after confirmation.
 
 This avoids shell interpretation and does not summarize or rewrite the objective.
 
 ## Token-efficiency choices
 
 - Conductor itself runs no model.
-- There is no polling prompt from Sol and no recurring worker-status loop.
-- Goal command output is only `delegated luna-N`.
+- There is no polling prompt from Brain and no recurring worker-status loop.
+- Goal command output is only `delegated worker-N`.
 - Project prefixes are used only for local tmux routing and never appended to
-  Sol-authored goals or Luna handoffs.
-- Inline worker objectives are exactly Sol-authored; Conductor adds no relay sentence or mandatory handoff schema.
+  Brain-authored goals or Worker handoffs.
+- Inline worker objectives are exactly Brain-authored; Conductor adds no relay sentence or mandatory handoff schema.
 - The handoff envelope contains only worker, status, and workspace.
 - Handoff content is not copied into an intermediate summary.
-- Sol can instruct Luna to store large details in the worktree and return only a selective pointer.
+- Brain can instruct Worker to store large details in the worktree and return only a selective pointer.
 
 ## Failure philosophy
 
