@@ -1,68 +1,68 @@
-# Sol–Luna protocol
+# Brain–Worker protocol
 
 ## Roles
 
-### Sol
+### Brain
 
-Sol owns orchestration and judgment:
+Brain owns orchestration and judgment:
 
 - receives the human's task;
 - decides whether and what to delegate;
-- authors each complete Luna `/goal`;
+- authors each complete Worker `/goal`;
 - selects the desired handoff depth and structure;
 - waits without polling;
 - reviews the returned worktree/handoff;
 - decides whether to continue, redelegate, or ask the human.
 
-### Luna
+### Worker
 
-Each Luna owns one worktree and one active goal at a time:
+Each Worker owns one worktree and one active goal at a time:
 
-- follows the exact goal Sol authored;
+- follows the exact goal Brain authored;
 - validates its work;
 - marks the built-in goal `complete` or `blocked` according to Codex's lifecycle;
-- returns the handoff Sol requested.
+- returns the handoff Brain requested.
 
 ### Conductor
 
 Conductor owns only transport state:
 
-- sends `/goal` to a named Luna terminal;
+- sends `/goal` to a named Worker terminal;
 - observes lifecycle events and performs at most one local reconciliation for an ambiguous Stop;
 - stores the final message exactly;
-- delivers it to Sol when safe.
+- delivers it to Brain when safe.
 
 ## Project scope
 
-Each project contains one Sol and its own Luna pool. Physical tmux sessions
-are namespaced (`project1--sol`, `project1--luna-1`), but Sol delegates with the
+Each project contains one Brain and its own Worker pool. Physical tmux sessions
+are namespaced (`project1--brain`, `project1--worker-1`), but Brain delegates with the
 same logical alias used by the default project:
 
 ```bash
-conductor goal luna-1 "..."
+conductor goal worker-1 "..."
 ```
 
 Conductor derives `project1` from the caller's tmux session and targets
-`project1--luna-1`. Project prefixes are not added to the goal or final handoff.
-Every project has an independent FIFO inbox and Sol busy/idle state.
+`project1--worker-1`. Project prefixes are not added to the goal or final handoff.
+Every project has an independent FIFO inbox and Brain busy/idle state.
 
 ## Delegation format
 
-There is no model-facing JSON protocol. Sol uses a normal shell command:
+There is no model-facing JSON protocol. Brain uses a normal shell command:
 
 ```bash
-cat <<'GOAL' | conductor goal luna-1 --stdin
+cat <<'GOAL' | conductor goal worker-1 --stdin
 <objective, constraints, validation, and desired handoff>
 GOAL
 ```
 
-Conductor sends the exact Sol-authored objective as a real goal:
+Conductor sends the exact Brain-authored objective as a real goal:
 
 ```text
 /goal <objective, constraints, validation, and desired handoff>
 ```
 
-There is no appended relay sentence and no mandatory response schema. When an objective exceeds the configured inline limit, Conductor stores the original text privately and sends a short goal instructing Luna to read that file.
+There is no appended relay sentence and no mandatory response schema. When an objective exceeds the configured inline limit, Conductor stores the original text privately and sends a short goal instructing Worker to read that file.
 
 ## Handoff envelope
 
@@ -77,11 +77,11 @@ workspace: <absolute worker workspace>
 
 The task id is deliberately omitted from model-visible text. It remains available in `conductor status --json` and local state.
 
-The normal statuses are `complete` and `blocked`. `implicit` means the worker ended a normal Codex turn with a final message but no goal lifecycle was ever persisted, even after one delayed recheck of at least one readable local source. Sol must treat `implicit` as a recovery signal rather than proof of success and decide whether to inspect, retry, or ask the human.
+The normal statuses are `complete` and `blocked`. `implicit` means the worker ended a normal Codex turn with a final message but no goal lifecycle was ever persisted, even after one delayed recheck of at least one readable local source. Brain must treat `implicit` as a recovery signal rather than proof of success and decide whether to inspect, retry, or ask the human.
 
-## Handoff strategy belongs to Sol
+## Handoff strategy belongs to Brain
 
-A fixed schema would either waste tokens on simple tasks or lose information on complex ones. Sol should choose among patterns such as:
+A fixed schema would either waste tokens on simple tasks or lose information on complex ones. Brain should choose among patterns such as:
 
 ### Inspectable-code pattern
 
@@ -103,7 +103,7 @@ remaining uncertainty, and your recommendation.
 
 ### File-backed pattern
 
-Use when evidence is large but Sol may not need all of it:
+Use when evidence is large but Brain may not need all of it:
 
 ```text
 Write the full report to <path>. In the final response include the conclusion,
@@ -112,18 +112,18 @@ critical caveats, and a recommendation on whether I need to read the full file.
 
 ### Comparative parallel pattern
 
-Give several Luna sessions independent approaches, then let Sol compare their handoffs:
+Give several Worker sessions independent approaches, then let Brain compare their handoffs:
 
 ```bash
-conductor goal luna-1 "Analyze approach A; do not modify code; return evidence."
-conductor goal luna-2 "Analyze approach B independently; return evidence."
+conductor goal worker-1 "Analyze approach A; do not modify code; return evidence."
+conductor goal worker-2 "Analyze approach B independently; return evidence."
 ```
 
 ## Blocked workers
 
 Conductor does not create a separate `BLOCKED` workflow. A built-in goal status of `blocked` is terminal for transport and produces a normal handoff.
 
-Sol can then:
+Brain can then:
 
 - answer the blocker with another goal;
 - inspect the worker's workspace;
@@ -135,10 +135,10 @@ Sol can then:
 
 Every worker completion is delivered independently.
 
-If Luna 2 finishes while Sol is handling Luna 1, Luna 2's message stays in the FIFO inbox. When Sol stops, the oldest pending message is delivered. This preserves visibility and prevents an active-turn steer.
+If Worker 2 finishes while Brain is handling Worker 1, Worker 2's message stays in the FIFO inbox. When Brain stops, the oldest pending message is delivered. This preserves visibility and prevents an active-turn steer.
 
 This ordering applies only within one project. Completions in another project
-are delivered independently to that project's Sol.
+are delivered independently to that project's Brain.
 
 ## Human intervention
 

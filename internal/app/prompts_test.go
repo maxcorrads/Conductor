@@ -11,8 +11,8 @@ func TestPublishedPromptsMatchEmbeddedPrompts(t *testing.T) {
 		path string
 		want string
 	}{
-		{"SOL.md", SolPrompt},
-		{"LUNA.md", LunaPrompt},
+		{"BRAIN.md", BrainPrompt},
+		{"WORKER.md", WorkerPrompt},
 	}
 	for _, test := range tests {
 		data, err := os.ReadFile(filepath.Join("..", "..", "prompts", test.path))

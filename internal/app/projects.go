@@ -12,7 +12,7 @@ import (
 )
 
 // DiscoverProjectIDs returns every project with local state, plus the default
-// project for backwards compatibility. Named projects are represented by
+// project. Named projects are represented by
 // private directories under ~/.conductor/projects/<id>.
 func DiscoverProjectIDs() ([]string, error) {
 	base, err := config.ResolvePaths()
@@ -53,7 +53,7 @@ func NewForHook(input HookInput) (*App, error) {
 		return nil, err
 	}
 	if session, _, currentErr := inferred.Tmux.CurrentSession(); currentErr == nil {
-		if parsed, ok := project.ParseSession(session, inferred.Config.SolSession, inferred.Config.WorkerSessionPattern); ok {
+		if parsed, ok := project.ParseSession(session, inferred.Config.BrainSession, inferred.Config.WorkerSessionPattern); ok {
 			if parsed.ProjectID == inferred.ProjectID {
 				return inferred, nil
 			}
@@ -94,7 +94,7 @@ func hookOwnershipScore(a *App, input HookInput) int {
 		return 0
 	}
 	if input.SessionID != "" {
-		if input.SessionID == st.Sol.CodexSessionID {
+		if input.SessionID == st.Brain.CodexSessionID {
 			return 10_000
 		}
 		for _, worker := range st.Workers {
@@ -113,8 +113,8 @@ func hookOwnershipScore(a *App, input HookInput) int {
 			}
 		}
 	}
-	if pathContains(st.Sol.CWD, input.CWD) {
-		score := 1_000 + pathDepth(st.Sol.CWD)
+	if pathContains(st.Brain.CWD, input.CWD) {
+		score := 1_000 + pathDepth(st.Brain.CWD)
 		if score > best {
 			best = score
 		}

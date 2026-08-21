@@ -1,6 +1,18 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/maxcorrads/conductor/internal/config"
+	"github.com/maxcorrads/conductor/internal/state"
+)
 
 func TestParseGlobalProjectOption(t *testing.T) {
 	for _, tc := range []struct {
@@ -23,8 +35,282 @@ func TestParseGlobalProjectOption(t *testing.T) {
 	}
 }
 
+func TestGUISnapshotHistorySelectionIsBoundedAndKeepsActiveRecords(t *testing.T) {
+	tasks := make([]*state.Task, 0, guiMaxSelectedRecords+20)
+	deliveries := make([]*state.Delivery, 0, guiMaxSelectedRecords+20)
+	for index := 0; index < guiMaxSelectedRecords+20; index++ {
+		status := state.TaskFinished
+		deliveryStatus := state.DeliveryDelivered
+		if index == guiMaxRecentRecords+5 {
+			status = state.TaskRunning
+			deliveryStatus = state.DeliveryPending
+		}
+		created := time.Unix(int64(guiMaxSelectedRecords+20-index), 0)
+		tasks = append(tasks, &state.Task{ID: fmt.Sprintf("task-%d", index), Status: status, CreatedAt: created})
+		deliveries = append(deliveries, &state.Delivery{ID: fmt.Sprintf("delivery-%d", index), Status: deliveryStatus, CreatedAt: created})
+	}
+	selectedTasks := selectRecentTasks(tasks)
+	selectedDeliveries := selectRecentDeliveries(deliveries)
+	if len(selectedTasks) > guiMaxSelectedRecords || len(selectedDeliveries) > guiMaxSelectedRecords {
+		t.Fatalf("history selection exceeded cap: tasks=%d deliveries=%d", len(selectedTasks), len(selectedDeliveries))
+	}
+	if !containsTask(selectedTasks, "task-105") || !containsDelivery(selectedDeliveries, "delivery-105") {
+		t.Fatal("active records outside the recent window were dropped")
+	}
+}
+
+func TestGUIWorkerSessionTemplateSupportsNamedProjectsWithCustomDefaultPattern(t *testing.T) {
+	customPattern := `^worker-(alpha|beta)$`
+	if got := guiWorkerSessionTemplate("default", customPattern); got != "" {
+		t.Fatalf("custom default pattern should not be synthesized, got %q", got)
+	}
+	if got := guiWorkerSessionTemplate("chapter", customPattern); got != "chapter--worker-%d" {
+		t.Fatalf("named project template = %q", got)
+	}
+}
+
+func TestGUIPendingHandoffTextIsNotStarvedByLargeGoal(t *testing.T) {
+	directory := t.TempDir()
+	goalPath := filepath.Join(directory, "goal.md")
+	handoffPath := filepath.Join(directory, "handoff.md")
+	if err := os.WriteFile(goalPath, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(handoffPath, []byte("priority handoff"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := guiProjectSnapshot{
+		GoalTexts:            map[string]string{},
+		GoalTextTruncated:    map[string]bool{},
+		HandoffMessages:      map[string]string{},
+		HandoffTextTruncated: map[string]bool{},
+	}
+	tasks := []*state.Task{{ID: "task", ObjectivePath: goalPath}}
+	deliveries := []*state.Delivery{{ID: "handoff", MessagePath: handoffPath, Status: state.DeliveryPending}}
+	populateProjectText(&project, tasks, deliveries, "", 1024)
+	if project.HandoffMessages["handoff"] != "priority handoff" {
+		t.Fatalf("pending handoff was starved: %q", project.HandoffMessages["handoff"])
+	}
+	if len(project.GoalTexts["task"]) == 0 {
+		t.Fatal("goal fair-share preview was unexpectedly empty")
+	}
+	if !project.GoalTextTruncated["task"] {
+		t.Fatal("bounded goal preview was not marked truncated")
+	}
+}
+
+func containsTask(tasks []*state.Task, id string) bool {
+	for _, task := range tasks {
+		if task.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDelivery(deliveries []*state.Delivery, id string) bool {
+	for _, delivery := range deliveries {
+		if delivery.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseGlobalProjectOptionRejectsAmbiguousName(t *testing.T) {
 	if _, _, err := parseGlobalOptions([]string{"--project", "a--b", "status"}); err == nil {
 		t.Fatal("expected invalid project to fail")
+	}
+}
+
+func TestGUIFileReadersBoundContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "content.log")
+	if err := os.WriteFile(path, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prefix, truncated, err := readTextPrefix(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prefix != "0123" {
+		t.Fatalf("prefix = %q", prefix)
+	}
+	if !truncated {
+		t.Fatal("bounded prefix was not marked truncated")
+	}
+	tail, err := readTextTail(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tail != "6789" {
+		t.Fatalf("tail = %q", tail)
+	}
+}
+
+func TestGUISnapshotNormalizesEmptyCollections(t *testing.T) {
+	snapshot := guiSnapshot{Projects: []guiProjectSnapshot{{ID: "empty"}}}
+	snapshot.normalizeCollections()
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		TmuxSessions []string `json:"tmux_sessions"`
+		Projects     []struct {
+			WorkerSessions       []string          `json:"worker_sessions"`
+			TaskOrder            []string          `json:"task_order"`
+			HandoffOrder         []string          `json:"handoff_order"`
+			GoalTexts            map[string]string `json:"goal_texts"`
+			GoalTextTruncated    map[string]bool   `json:"goal_text_truncated"`
+			HandoffMessages      map[string]string `json:"handoff_messages"`
+			HandoffTextTruncated map[string]bool   `json:"handoff_message_truncated"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.TmuxSessions == nil || len(decoded.Projects) != 1 {
+		t.Fatalf("snapshot collections were not normalized: %s", data)
+	}
+	project := decoded.Projects[0]
+	if project.WorkerSessions == nil || project.TaskOrder == nil || project.HandoffOrder == nil || project.GoalTexts == nil || project.GoalTextTruncated == nil || project.HandoffMessages == nil || project.HandoffTextTruncated == nil {
+		t.Fatalf("project collections were not normalized: %s", data)
+	}
+}
+
+func TestGUISessionSnapshotEncodesEmptySessionsAsArray(t *testing.T) {
+	probe := guiSessionSnapshot{}
+	if probe.TmuxSessions == nil {
+		probe.TmuxSessions = []string{}
+	}
+	data, err := json.Marshal(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		TmuxSessions []string `json:"tmux_sessions"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.TmuxSessions == nil {
+		t.Fatalf("session probe encoded null collection: %s", data)
+	}
+}
+
+func TestPaneShowsActiveTurnUsesInterruptMarker(t *testing.T) {
+	if !paneShowsActiveTurn("• Working (28s • esc to interrupt) · 1 background terminal running") {
+		t.Fatal("active Codex turn was not detected")
+	}
+	if paneShowsActiveTurn("Goal stalled (/goal resume)\n› Ask Codex to do anything") {
+		t.Fatal("stalled goal without an active turn was reported busy")
+	}
+	if paneShowsActiveTurn("› Please print the phrase esc to interrupt\n› Ask Codex to do anything") {
+		t.Fatal("prompt text containing the marker was reported busy")
+	}
+	if !paneShowsActiveTurn("Working (2s • esc to cancel)") {
+		t.Fatal("active cancel marker was not detected")
+	}
+}
+
+func TestGUIActivityProbeTracksOnlyConductorSessions(t *testing.T) {
+	cfg := config.Default()
+	got := conductorSessions([]string{
+		"brain", "worker-1", "chapter--brain", "chapter--worker-2", "unrelated", "legacy--assistant-1",
+	}, cfg)
+	want := []string{"brain", "worker-1", "chapter--brain", "chapter--worker-2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tracked sessions = %v, want %v", got, want)
+	}
+}
+
+func TestGUIActivityBatchDoesNotProjectIdleWhenTmuxAborts(t *testing.T) {
+	fakeTmux := filepath.Join(t.TempDir(), "tmux")
+	if err := os.WriteFile(fakeTmux, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectSessionActivity(fakeTmux, []string{"brain", "worker-1"}); len(got) != 0 {
+		t.Fatalf("failed batch projected activity: %+v", got)
+	}
+}
+
+func TestGUIActivityBatchParsesEveryCompletedSession(t *testing.T) {
+	fakeTmux := filepath.Join(t.TempDir(), "tmux")
+	script := `#!/bin/sh
+for argument do
+  case "$argument" in
+    *__CONDUCTOR_ACTIVITY_*_0_BEGIN__) printf '%s\n' "$argument" '• Working (2s • esc to interrupt)' ;;
+    *__CONDUCTOR_ACTIVITY_*_1_BEGIN__) printf '%s\n' "$argument" '› Ask Codex to do anything' ;;
+    *__CONDUCTOR_ACTIVITY_*_END__) printf '%s\n' "$argument" ;;
+  esac
+done
+`
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := detectSessionActivity(fakeTmux, []string{"brain", "worker-1"})
+	if !got["brain"] || got["worker-1"] {
+		t.Fatalf("parsed batch activity = %+v", got)
+	}
+}
+
+func TestGUIModelCatalogDecodesArrayAndWrappedShapes(t *testing.T) {
+	for _, input := range []string{
+		`[{"slug":"custom-model","display_name":"Custom","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Deep"}]}]`,
+		`{"models":[{"slug":"custom-model","supported_reasoning_levels":[]}]}`,
+	} {
+		models, err := decodeGUIModelCatalog([]byte(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(models) != 1 || models[0].Slug != "custom-model" {
+			t.Fatalf("decoded models = %+v", models)
+		}
+	}
+}
+
+func TestGUIModelCatalogPrefersLiveAndFallsBackToBundled(t *testing.T) {
+	live := []guiCodexModel{{Slug: "gpt-daybreak-blue-latest"}}
+	bundled := []guiCodexModel{{Slug: "bundled-fallback"}}
+	got, err := resolveGUIModelCatalog(
+		func() ([]guiCodexModel, error) { return live, nil },
+		func() ([]guiCodexModel, error) { return bundled, nil },
+	)
+	if err != nil || !reflect.DeepEqual(got, live) {
+		t.Fatalf("live catalog = %+v, %v", got, err)
+	}
+
+	got, err = resolveGUIModelCatalog(
+		func() ([]guiCodexModel, error) { return nil, errors.New("offline") },
+		func() ([]guiCodexModel, error) { return bundled, nil },
+	)
+	if err != nil || !reflect.DeepEqual(got, bundled) {
+		t.Fatalf("bundled fallback = %+v, %v", got, err)
+	}
+}
+
+func TestGUIModelCatalogIncludesOnlyModelsCodexMarksVisible(t *testing.T) {
+	models := visibleGUIModels([]guiCodexModel{
+		{Slug: "gpt-daybreak-blue-latest", Visibility: "list"},
+		{Slug: "gpt-reserve", Visibility: "hide"},
+		{Slug: "codex-auto-review", Visibility: "hide"},
+	})
+	if len(models) != 1 || models[0].Slug != "gpt-daybreak-blue-latest" {
+		t.Fatalf("visible models = %+v", models)
+	}
+}
+
+func TestApplyLiveActivityOverridesStaleHookFlagsWithoutMutatingWorkers(t *testing.T) {
+	originalWorker := &state.Worker{Session: "worker-1", Busy: true}
+	display := state.State{
+		Brain:   state.Activity{Session: "brain", Busy: false},
+		Workers: map[string]*state.Worker{"worker-1": originalWorker},
+	}
+	applyLiveActivity(&display, "brain", map[string]bool{"brain": true, "worker-1": false})
+	if !display.Brain.Busy || display.Workers["worker-1"].Busy {
+		t.Fatalf("live activity was not authoritative: %+v", display)
+	}
+	if !originalWorker.Busy {
+		t.Fatal("live projection mutated persisted worker state")
 	}
 }

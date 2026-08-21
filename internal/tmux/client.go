@@ -37,7 +37,6 @@ type ExecClient struct {
 }
 
 type GoalDispatchOptions struct {
-	ClearDelay           time.Duration
 	PrefixDelay          time.Duration
 	ReplaceProbeTimeout  time.Duration
 	ReplaceProbeInterval time.Duration
@@ -45,7 +44,6 @@ type GoalDispatchOptions struct {
 
 func DefaultGoalDispatchOptions() GoalDispatchOptions {
 	return GoalDispatchOptions{
-		ClearDelay:           250 * time.Millisecond,
 		PrefixDelay:          75 * time.Millisecond,
 		ReplaceProbeTimeout:  1200 * time.Millisecond,
 		ReplaceProbeInterval: 75 * time.Millisecond,
@@ -150,15 +148,14 @@ func (c *ExecClient) SendPrompt(targetPane string, prompt string) error {
 	return c.pasteAndSubmit(targetPane, prompt)
 }
 
-// SendGoal clears any persisted goal left by the previous task, writes the
-// slash-command prefix as literal key events, and then pastes only the
-// objective. Codex's TUI may collapse a large single paste into a placeholder
+// SendGoal writes the slash-command prefix as literal key events and then
+// pastes only the objective. Codex's TUI may collapse a large single paste into a placeholder
 // before slash-command dispatch; keeping "/goal " outside the pasted block
 // makes the command recognizable while preserving the objective verbatim,
 // including newlines.
 //
 // A bounded, local capture-pane probe confirms Codex's "Replace goal?" dialog
-// when the clear and set operations race. It never talks to a model and stops
+// when a previous persisted goal exists. It never talks to a model and stops
 // as soon as the dialog is handled or the timeout expires.
 func (c *ExecClient) SendGoal(targetPane string, objective string) error {
 	if strings.TrimSpace(objective) == "" {
@@ -174,19 +171,9 @@ func (c *ExecClient) SendGoal(targetPane string, objective string) error {
 		c.pause(25 * time.Millisecond)
 	}
 
-	// Start from an empty composer, clear the persisted goal, and give Codex's
-	// app-server a short window to commit the clear before setting the new goal.
-	if err := c.sendKey(targetPane, "C-u"); err != nil {
-		return err
-	}
-	if err := c.sendLiteral(targetPane, "/goal clear"); err != nil {
-		return fmt.Errorf("tmux send /goal clear: %w", err)
-	}
-	if err := c.sendKey(targetPane, "Enter"); err != nil {
-		return err
-	}
-	c.pause(c.goalDispatch.ClearDelay)
-
+	// Start from an empty composer. A previous persisted goal is replaced through
+	// Codex's native confirmation dialog; `/goal clear` is not a supported clear
+	// command and would become part of the objective text.
 	if err := c.sendKey(targetPane, "C-u"); err != nil {
 		return err
 	}

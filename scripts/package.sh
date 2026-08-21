@@ -2,7 +2,11 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${VERSION:-0.2.1}
+VERSION=${VERSION:-0.3.0}
+if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'; then
+  echo "VERSION must be a semantic version, got: $VERSION" >&2
+  exit 1
+fi
 NAME="conductor-v$VERSION"
 STAGE="$ROOT/release/$NAME"
 ARCHIVE="$ROOT/release/$NAME.zip"
@@ -25,10 +29,14 @@ for item in \
   examples \
   go.mod \
   internal \
+  macos \
   prompts \
   scripts; do
   cp -R "$ROOT/$item" "$STAGE/"
 done
+
+# Never ship local SwiftPM caches when packaging from a developer checkout.
+rm -rf "$STAGE/macos/ConductorApp/.build" "$STAGE/macos/ConductorApp/.swiftpm"
 
 mkdir -p "$STAGE/dist"
 cp "$ROOT/dist/conductor-darwin-arm64" "$STAGE/dist/"

@@ -6,17 +6,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
-const CurrentVersion = 1
+const CurrentVersion = 2
 
 type Config struct {
 	Version              int      `json:"version"`
-	SolSession           string   `json:"sol_session"`
+	BrainSession         string   `json:"brain_session"`
 	WorkerSessionPattern string   `json:"worker_session_pattern"`
 	TmuxCommand          string   `json:"tmux_command"`
 	DeliveryDelayMS      int      `json:"delivery_delay_ms"`
-	GoalClearDelayMS     int      `json:"goal_clear_delay_ms"`
 	GoalPrefixDelayMS    int      `json:"goal_prefix_delay_ms"`
 	GoalReplaceProbeMS   int      `json:"goal_replace_probe_ms"`
 	GoalReconcileDelayMS int      `json:"goal_reconcile_delay_ms"`
@@ -42,16 +43,12 @@ type Paths struct {
 func Default() Config {
 	return Config{
 		Version:              CurrentVersion,
-		SolSession:           "sol",
-		WorkerSessionPattern: `^luna-[1-9][0-9]*$`,
+		BrainSession:         "brain",
+		WorkerSessionPattern: `^worker-[1-9][0-9]*$`,
 		TmuxCommand:          "tmux",
 		DeliveryDelayMS:      180,
-		// Clear the prior persisted goal before assigning the next one. A bounded
-		// post-submit probe still confirms Codex's replacement dialog if the clear
-		// and set operations race on a slower machine.
-		GoalClearDelayMS:   250,
-		GoalPrefixDelayMS:  75,
-		GoalReplaceProbeMS: 1_200,
+		GoalPrefixDelayMS:    75,
+		GoalReplaceProbeMS:   1_200,
 		// A normal worker Stop with no observable goal schedules one local,
 		// delayed reconciliation. It is cancelled by any subsequent worker turn
 		// and never polls a model.
@@ -146,7 +143,7 @@ func Load(paths Paths) (Config, error) {
 		return Config{}, fmt.Errorf("parse %s: %w", paths.Config, err)
 	}
 	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("validate %s: %w", paths.Config, err)
 	}
 	return cfg, nil
 }
@@ -170,20 +167,27 @@ func (c Config) Validate() error {
 	if c.Version != CurrentVersion {
 		return fmt.Errorf("unsupported config version %d (expected %d)", c.Version, CurrentVersion)
 	}
-	if c.SolSession == "" {
-		return errors.New("sol_session cannot be empty")
+	if c.BrainSession == "" {
+		return errors.New("brain_session cannot be empty")
+	}
+	if strings.Contains(c.BrainSession, "--") {
+		return errors.New("brain_session cannot contain the reserved project separator --")
 	}
 	if c.WorkerSessionPattern == "" {
 		return errors.New("worker_session_pattern cannot be empty")
+	}
+	workerRE, err := regexp.Compile(c.WorkerSessionPattern)
+	if err != nil {
+		return fmt.Errorf("invalid worker_session_pattern: %w", err)
+	}
+	if workerRE.MatchString("reserved--worker-1") {
+		return errors.New("worker_session_pattern cannot match named-project sessions")
 	}
 	if c.TmuxCommand == "" {
 		return errors.New("tmux_command cannot be empty")
 	}
 	if c.DeliveryDelayMS < 0 || c.DeliveryDelayMS > 10_000 {
 		return errors.New("delivery_delay_ms must be between 0 and 10000")
-	}
-	if c.GoalClearDelayMS < 0 || c.GoalClearDelayMS > 10_000 {
-		return errors.New("goal_clear_delay_ms must be between 0 and 10000")
 	}
 	if c.GoalPrefixDelayMS < 0 || c.GoalPrefixDelayMS > 10_000 {
 		return errors.New("goal_prefix_delay_ms must be between 0 and 10000")

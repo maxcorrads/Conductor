@@ -11,8 +11,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.22.x'
           cache: false
@@ -24,12 +24,58 @@ jobs:
         run: make vet
       - name: Race detector
         run: make race
+      - name: Installer version checks
+        run: make test-installer
       - name: Build and verify macOS release archive
         run: make verify-package
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: conductor-release
           path: |
             release/conductor-v*.zip
             release/conductor-v*.zip.sha256
+          if-no-files-found: error
+
+  macos-app:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.22.x'
+          cache: false
+      - name: Installer runtime preflight checks
+        run: make test-installer
+      - name: Test Swift app
+        run: swift test --package-path macos/ConductorApp
+      - name: Build universal macOS app
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          version="$(make -s print-version)"
+          make app VERSION="$version"
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Verify app archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          checksum="release/Conductor-v${APP_VERSION}-macos.zip.sha256"
+          test "$(awk 'NR == 1 { print $2 }' "$checksum")" = "Conductor-v${APP_VERSION}-macos.zip"
+          (cd release && shasum -a 256 -c "Conductor-v${APP_VERSION}-macos.zip.sha256")
+          codesign --verify --deep --strict --verbose=2 release/Conductor.app
+          test "$(release/Conductor.app/Contents/Resources/conductor version)" = "conductor ${APP_VERSION}"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - release/Conductor.app/Contents/Info.plist)" = "$APP_VERSION"
+          test "$(plutil -extract CFBundleVersion raw -o - release/Conductor.app/Contents/Info.plist)" = "$GITHUB_RUN_NUMBER"
+          lipo -archs release/Conductor.app/Contents/MacOS/Conductor | grep -Fq arm64
+          lipo -archs release/Conductor.app/Contents/MacOS/Conductor | grep -Fq x86_64
+          lipo -archs release/Conductor.app/Contents/Resources/conductor | grep -Fq arm64
+          lipo -archs release/Conductor.app/Contents/Resources/conductor | grep -Fq x86_64
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: conductor-macos-app
+          path: |
+            release/Conductor-v*-macos.zip
+            release/Conductor-v*-macos.zip.sha256
           if-no-files-found: error

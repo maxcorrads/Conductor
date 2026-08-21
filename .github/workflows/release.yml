@@ -6,20 +6,22 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  cli:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.22.x'
           cache: false
@@ -38,21 +40,146 @@ jobs:
             exit 1
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
-      - name: Build, test, and verify release archive
+      - name: Build, test, and verify CLI release archive
         run: make release VERSION="${{ steps.version.outputs.value }}"
-      - name: Publish GitHub Release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: conductor-cli-release
+          path: |
+            release/conductor-v*.zip
+            release/conductor-v*.zip.sha256
+          if-no-files-found: error
+
+  macos-app:
+    needs: cli
+    runs-on: macos-14
+    environment: macos-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.22.x'
+          cache: false
+      - name: Installer preflight checks
+        run: make test-installer
+      - name: Test Swift app
+        run: swift test --package-path macos/ConductorApp
+      - name: Import Developer ID certificate
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.value }}
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/conductor-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          chmod 600 "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/{print $2; exit}')"
+          if [[ -z "$identity" ]]; then
+            echo "No Developer ID Application identity found in imported certificate." >&2
+            exit 1
+          fi
+          echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build and sign universal app
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: make app VERSION="${{ needs.cli.outputs.version }}"
+      - name: Notarize and staple app
+        shell: bash
+        env:
+          API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          VERSION: ${{ needs.cli.outputs.version }}
+        run: |
+          set -euo pipefail
+          api_key="$RUNNER_TEMP/AuthKey_${API_KEY_ID}.p8"
+          archive="release/Conductor-v${VERSION}-macos.zip"
+          printf '%s' "$API_KEY_BASE64" | base64 --decode > "$api_key"
+          chmod 600 "$api_key"
+          xcrun notarytool submit "$archive" \
+            --key "$api_key" \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple release/Conductor.app
+          xcrun stapler validate release/Conductor.app
+          rm -f "$archive" "$archive.sha256"
+          ditto -c -k --sequesterRsrc --keepParent release/Conductor.app "$archive"
+          archive_name="$(basename "$archive")"
+          (
+            cd release
+            shasum -a 256 "$archive_name" > "$archive_name.sha256"
+          )
+          codesign --verify --deep --strict --verbose=2 release/Conductor.app
+          test "$(plutil -extract CFBundleVersion raw -o - release/Conductor.app/Contents/Info.plist)" = "$GITHUB_RUN_NUMBER"
+          team_id="$(codesign -dv --verbose=4 release/Conductor.app 2>&1 | awk -F= '/^TeamIdentifier=/{print $2; exit}')"
+          test "$team_id" = "$APPLE_TEAM_ID"
+          spctl --assess --type execute --verbose=2 release/Conductor.app
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: conductor-signed-macos-app
+          path: |
+            release/Conductor-v*-macos.zip
+            release/Conductor-v*-macos.zip.sha256
+          if-no-files-found: error
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/conductor-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP"/AuthKey_*.p8
+
+  publish:
+    needs: [cli, macos-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: conductor-cli-release
+          path: release-assets
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: conductor-signed-macos-app
+          path: release-assets
+      - name: Verify release assets
+        env:
+          VERSION: ${{ needs.cli.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          archive="release/conductor-v${VERSION}.zip"
-          checksum="${archive}.sha256"
+          cd release-assets
+          shasum -a 256 -c "conductor-v${VERSION}.zip.sha256"
+          shasum -a 256 -c "Conductor-v${VERSION}-macos.zip.sha256"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.cli.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "release-assets/conductor-v${VERSION}.zip"
+            "release-assets/conductor-v${VERSION}.zip.sha256"
+            "release-assets/Conductor-v${VERSION}-macos.zip"
+            "release-assets/Conductor-v${VERSION}-macos.zip.sha256"
+          )
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$archive" "$checksum" --clobber
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$archive" "$checksum" \
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
               --verify-tag \
               --title "Conductor ${VERSION}" \
               --generate-notes

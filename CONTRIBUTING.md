@@ -5,7 +5,7 @@ Conductor is intentionally small. Changes should preserve its core constraint: i
 ## Principles
 
 - Do not add an LLM, API call, daemon, or polling loop.
-- Do not summarize or reinterpret Luna's handoff.
+- Do not summarize or reinterpret Worker's handoff.
 - Do not manage model selection, context, compaction, Git, or worktrees.
 - Keep model-visible transport text minimal.
 - Prefer supported Codex lifecycle inputs over transcript parsing.

@@ -2,16 +2,21 @@
 
 ## Local-only transport
 
-Conductor contains no network client and makes no OpenAI API calls. It invokes only:
+Conductor contains no network client and makes no direct OpenAI API calls. It
+invokes only:
 
 - the local `tmux` executable;
 - the installed Conductor binary for lifecycle hooks, one-shot delivery, and one delayed in-hook goal reconciliation;
 - optionally `sqlite3` for a compatibility-only local goal-status lookup;
-- `codex --version` and `codex features list` in `doctor`.
+- `codex --version` and `codex features list` in `doctor`;
+- `codex debug models` when a Brain or Worker launch sheet requests the current
+  model catalog, with `--bundled` as the offline fallback.
 
-Codex itself continues to use the user's normal authenticated CLI subscription/session.
+The live model-catalog command can cause the authenticated Codex CLI to refresh
+data over the network. Codex itself continues to use the user's normal
+authenticated CLI subscription/session.
 
-Codex sandboxing still applies to commands Sol or Luna execute. Depending on the selected permission profile, invoking `conductor goal` can require approval to write the state directory or access the tmux socket. Prefer a narrow permission or a shared temp-backed `CONDUCTOR_HOME`; do not disable the sandbox solely for this tool.
+Codex sandboxing still applies to commands Brain or Worker execute. Depending on the selected permission profile, invoking `conductor goal` can require approval to write the state directory or access the tmux socket. Prefer a narrow permission or a shared temp-backed `CONDUCTOR_HOME`; do not disable the sandbox solely for this tool.
 
 ## Hook trust
 
@@ -27,15 +32,15 @@ Review the file and `/hooks` UI. The installer:
 
 ## Prompt-injection boundary
 
-Luna's final message is model-authored content and may be influenced by untrusted repository text. Conductor pastes that content into Sol as a user message.
+Worker's final message is model-authored content and may be influenced by untrusted repository text. Conductor pastes that content into Brain as a user message.
 
-Sol must treat the handoff as untrusted worker output, not as higher-priority instructions. The Sol protocol should remain in trusted project/user instructions and retain decision authority.
+Brain must treat the handoff as untrusted worker output, not as higher-priority instructions. The Brain protocol should remain in trusted project/user instructions and retain decision authority.
 
 Do not use Conductor as a security boundary between mutually untrusted agents or repositories.
 
 ## Workspace isolation
 
-Use a separate git worktree for every Luna session. Conductor records the pane's current path but does not validate repository identity or prevent two workers from touching shared external files.
+Use a separate git worktree for every Worker session. Conductor records the pane's current path but does not validate repository identity or prevent two workers from touching shared external files.
 
 Worktrees isolate tracked working files, not necessarily:
 
@@ -53,7 +58,7 @@ Use Codex permissions/sandboxing appropriate to the task.
 Conductor creates its home directories with `0700` and private files with `0600`. Stored data can include:
 
 - complete delegated goals;
-- final Luna handoffs;
+- final Worker handoffs;
 - cached assistant messages;
 - absolute paths;
 - task and session identifiers;
@@ -63,10 +68,10 @@ Anyone with access to the user's account or backups may be able to read this dat
 
 ## tmux paste behavior
 
-Conductor sends exact multiline text through a named tmux buffer and then sends Enter. It does not evaluate the text as a shell command itself. Before worker delegation it also uses local key events for `/goal clear` and a bounded `capture-pane` read to recognize the exact Codex replacement dialog. The receiving Codex model may subsequently choose to execute commands under its normal permission policy.
+Conductor sends exact multiline text through a named tmux buffer and then sends Enter. It does not evaluate the text as a shell command itself. Before worker delegation it also uses local key events for the `/goal ` prefix and a bounded `capture-pane` read to recognize the exact Codex replacement dialog. The receiving Codex model may subsequently choose to execute commands under its normal permission policy.
 
 A wrong or stale target session can expose content in the wrong terminal. Keep
-unique session names, use the same project prefix for a Sol and its workers,
+unique session names, use the same project prefix for a Brain and its workers,
 and keep one active Codex pane per session. Project state is isolated, but all
 projects still share the same local user and tmux server; project namespacing
 is routing isolation, not a security sandbox.

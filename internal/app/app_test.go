@@ -29,6 +29,41 @@ type sentPrompt struct {
 	text   string
 }
 
+func TestDefaultWorkerMatcherNeverClaimsNamedProjectSessions(t *testing.T) {
+	a := &App{
+		ProjectID: "default",
+		workerRE:  regexp.MustCompile(`^foo--worker-[1-9][0-9]*$`),
+	}
+	if a.IsWorkerSession("foo--worker-1") {
+		t.Fatal("default project claimed a named-project worker")
+	}
+}
+
+func TestManualFinishRejectsAReplacementTask(t *testing.T) {
+	a, _, _ := testApp(t)
+	first, err := a.Delegate("worker-1", "First task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.finishTask(first.ID, "first handoff", "complete", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.Delegate("worker-1", "Replacement task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.FinishWorkerTask("worker-1", first.ID, "stale handoff", "complete"); err == nil {
+		t.Fatal("stale confirmation finished the replacement task")
+	}
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Tasks[second.ID].Status != state.TaskRunning {
+		t.Fatalf("replacement task status = %s", st.Tasks[second.ID].Status)
+	}
+}
+
 func (f *fakeTmux) CurrentSession() (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -92,14 +127,14 @@ func testApp(t *testing.T) (*App, *fakeTmux, time.Time) {
 	cfg := config.Default()
 	cfg.DeliveryDelayMS = 0
 	clock := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	fake := &fakeTmux{current: "sol", panes: map[string]tmux.Pane{
-		"sol":    {ID: "%1", Session: "sol", Path: "/repo/main", Command: "codex", Active: true},
-		"luna-1": {ID: "%2", Session: "luna-1", Path: "/repo/worktrees/luna-1", Command: "codex", Active: true},
-		"luna-2": {ID: "%3", Session: "luna-2", Path: "/repo/worktrees/luna-2", Command: "codex", Active: true},
+	fake := &fakeTmux{current: "brain", panes: map[string]tmux.Pane{
+		"brain":    {ID: "%1", Session: "brain", Path: "/repo/main", Command: "codex", Active: true},
+		"worker-1": {ID: "%2", Session: "worker-1", Path: "/repo/worktrees/worker-1", Command: "codex", Active: true},
+		"worker-2": {ID: "%3", Session: "worker-2", Path: "/repo/worktrees/worker-2", Command: "codex", Active: true},
 	}}
-	store := state.NewStore(paths, cfg.SolSession)
+	store := state.NewStore(paths, cfg.BrainSession)
 	store.Now = func() time.Time { return clock }
-	a := &App{ProjectID: "default", Paths: paths, Config: cfg, SolSession: cfg.SolSession, Store: store, Tmux: fake, Executable: "/tmp/conductor", Now: func() time.Time { return clock }, workerRE: regexp.MustCompile(cfg.WorkerSessionPattern)}
+	a := &App{ProjectID: "default", Paths: paths, Config: cfg, BrainSession: cfg.BrainSession, Store: store, Tmux: fake, Executable: "/tmp/conductor", Now: func() time.Time { return clock }, workerRE: regexp.MustCompile(cfg.WorkerSessionPattern)}
 	if err := config.EnsureDirectories(paths); err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +146,8 @@ func testApp(t *testing.T) (*App, *fakeTmux, time.Time) {
 
 func TestDelegateSendsExactInlineObjective(t *testing.T) {
 	a, fake, _ := testApp(t)
-	objective := "  Investigate without edits.\n\nReturn any handoff structure Sol requested.  "
-	task, err := a.Delegate("luna-1", objective)
+	objective := "  Investigate without edits.\n\nReturn any handoff structure Brain requested.  "
+	task, err := a.Delegate("worker-1", objective)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +171,7 @@ func TestLongGoalUsesPrivateFileReference(t *testing.T) {
 	a, fake, _ := testApp(t)
 	a.Config.InlineGoalMaxChars = 256
 	objective := strings.Repeat("Detailed evidence and constraints.\n", 20) + "Final requirement."
-	task, err := a.Delegate("luna-1", objective)
+	task, err := a.Delegate("worker-1", objective)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,11 +194,11 @@ func TestLongGoalUsesPrivateFileReference(t *testing.T) {
 
 func TestMultipleWorkersCanRunInParallel(t *testing.T) {
 	a, fake, _ := testApp(t)
-	first, err := a.Delegate("luna-1", "Investigate path A")
+	first, err := a.Delegate("worker-1", "Investigate path A")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := a.Delegate("luna-2", "Investigate path B")
+	second, err := a.Delegate("worker-2", "Investigate path B")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,14 +213,14 @@ func TestMultipleWorkersCanRunInParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ActiveTaskForWorker(&st, "luna-1") == nil || state.ActiveTaskForWorker(&st, "luna-2") == nil {
+	if state.ActiveTaskForWorker(&st, "worker-1") == nil || state.ActiveTaskForWorker(&st, "worker-2") == nil {
 		t.Fatalf("parallel active tasks missing: %+v", st.Tasks)
 	}
 }
 
-func TestVerbatimWorkerHandoffIsPastedIntoSol(t *testing.T) {
+func TestVerbatimWorkerHandoffIsPastedIntoBrain(t *testing.T) {
 	a, fake, _ := testApp(t)
-	task, err := a.Delegate("luna-1", "Investigate the race. Return any handoff structure you consider useful.")
+	task, err := a.Delegate("worker-1", "Investigate the race. Return any handoff structure you consider useful.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,13 +228,13 @@ func TestVerbatimWorkerHandoffIsPastedIntoSol(t *testing.T) {
 		t.Fatalf("goal was not sent: %+v", prompts)
 	}
 
-	// Sol finishes its delegation turn and becomes truly idle.
-	fake.setCurrent("sol")
-	if err := a.HandleHook("stop", HookInput{SessionID: "sol-thread", CWD: "/repo/main", TurnID: "sol-turn"}); err != nil {
+	// Brain finishes its delegation turn and becomes truly idle.
+	fake.setCurrent("brain")
+	if err := a.HandleHook("stop", HookInput{SessionID: "brain-thread", CWD: "/repo/main", TurnID: "brain-turn"}); err != nil {
 		t.Fatal(err)
 	}
 
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("post-tool-use", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "worker-turn",
 		ToolName: "update_goal", ToolInput: json.RawMessage(`{"status":"complete"}`),
@@ -217,7 +252,7 @@ func TestVerbatimWorkerHandoffIsPastedIntoSol(t *testing.T) {
 		t.Fatalf("expected goal + handoff, got %+v", prompts)
 	}
 	got := prompts[1].text
-	prefix := "[CONDUCTOR HANDOFF | luna-1 | complete]\nworkspace: " + task.Workspace + "\n\n"
+	prefix := "[CONDUCTOR HANDOFF | worker-1 | complete]\nworkspace: " + task.Workspace + "\n\n"
 	if !strings.HasPrefix(got, prefix) {
 		t.Fatalf("missing envelope: %q", got)
 	}
@@ -226,14 +261,14 @@ func TestVerbatimWorkerHandoffIsPastedIntoSol(t *testing.T) {
 	}
 }
 
-func TestActiveGoalDoesNotWakeSol(t *testing.T) {
+func TestActiveGoalDoesNotWakeBrain(t *testing.T) {
 	a, fake, clock := testApp(t)
-	task, err := a.Delegate("luna-1", "Long task")
+	task, err := a.Delegate("worker-1", "Long task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("sol")
-	if err := a.HandleHook("stop", HookInput{SessionID: "sol-thread", CWD: "/repo/main"}); err != nil {
+	fake.setCurrent("brain")
+	if err := a.HandleHook("stop", HookInput{SessionID: "brain-thread", CWD: "/repo/main"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +278,7 @@ func TestActiveGoalDoesNotWakeSol(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := "Intermediate checkpoint"
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("stop", HookInput{SessionID: "worker-thread", CWD: task.Workspace, TranscriptPath: &path, LastAssistantMessage: &msg}); err != nil {
 		t.Fatal(err)
 	}
@@ -256,9 +291,9 @@ func TestActiveGoalDoesNotWakeSol(t *testing.T) {
 	}
 }
 
-func TestBusySolQueuesThenFlushesOneHandoff(t *testing.T) {
+func TestBusyBrainQueuesThenFlushesOneHandoff(t *testing.T) {
 	a, fake, clock := testApp(t)
-	task, err := a.Delegate("luna-1", "Task")
+	task, err := a.Delegate("worker-1", "Task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,18 +303,18 @@ func TestBusySolQueuesThenFlushesOneHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := "Blocked because a product decision is required. Options: A or B."
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("stop", HookInput{SessionID: "worker-thread", CWD: task.Workspace, TranscriptPath: &path, LastAssistantMessage: &msg}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.prompts()) != 1 {
-		t.Fatal("busy Sol should not be interrupted")
+		t.Fatal("busy Brain should not be interrupted")
 	}
 	st, _ := a.Store.Read()
 	if len(state.PendingDeliveries(&st)) != 1 {
 		t.Fatalf("handoff not queued: %+v", st.Deliveries)
 	}
-	if err := a.MarkSolIdle(); err != nil {
+	if err := a.MarkBrainIdle(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.Flush(false); err != nil {
@@ -292,11 +327,11 @@ func TestBusySolQueuesThenFlushesOneHandoff(t *testing.T) {
 
 func TestGoalStatusCapturedFromPostToolUse(t *testing.T) {
 	a, fake, _ := testApp(t)
-	task, err := a.Delegate("luna-1", "Task")
+	task, err := a.Delegate("worker-1", "Task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("post-tool-use", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "turn-123",
 		ToolName: "update_goal", ToolInput: json.RawMessage(`{"status":"blocked"}`),
@@ -316,16 +351,16 @@ func TestGoalStatusCapturedFromPostToolUse(t *testing.T) {
 
 func TestTerminalGoalFromDifferentTurnIsIgnored(t *testing.T) {
 	a, fake, _ := testApp(t)
-	task, err := a.Delegate("luna-1", "Task")
+	task, err := a.Delegate("worker-1", "Task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("sol")
-	if err := a.HandleHook("stop", HookInput{SessionID: "sol-thread", CWD: "/repo/main"}); err != nil {
+	fake.setCurrent("brain")
+	if err := a.HandleHook("stop", HookInput{SessionID: "brain-thread", CWD: "/repo/main"}); err != nil {
 		t.Fatal(err)
 	}
 
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("post-tool-use", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "terminal-turn",
 		ToolName: "update_goal", ToolInput: json.RawMessage(`{"status":"complete"}`),
@@ -359,11 +394,11 @@ func TestTerminalGoalFromDifferentTurnIsIgnored(t *testing.T) {
 
 func TestFailedUpdateGoalResponseIsNotTreatedAsTerminal(t *testing.T) {
 	a, fake, _ := testApp(t)
-	task, err := a.Delegate("luna-1", "Task")
+	task, err := a.Delegate("worker-1", "Task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("post-tool-use", HookInput{
 		SessionID: "worker-thread", CWD: task.Workspace, TurnID: "turn-123",
 		ToolName: "update_goal", ToolInput: json.RawMessage(`{"status":"complete"}`),
@@ -383,14 +418,14 @@ func TestFailedUpdateGoalResponseIsNotTreatedAsTerminal(t *testing.T) {
 func TestDelegateFailureDoesNotLeaveWorkerBusy(t *testing.T) {
 	a, fake, _ := testApp(t)
 	fake.sendErr = fmt.Errorf("paste failed")
-	if _, err := a.Delegate("luna-1", "Task"); err == nil {
+	if _, err := a.Delegate("worker-1", "Task"); err == nil {
 		t.Fatal("expected delegation to fail")
 	}
 	st, err := a.Store.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker := st.Workers["luna-1"]
+	worker := st.Workers["worker-1"]
 	if worker == nil || worker.Busy {
 		t.Fatalf("worker remained busy after failed paste: %+v", worker)
 	}
@@ -405,17 +440,17 @@ func TestDelegateFailureDoesNotLeaveWorkerBusy(t *testing.T) {
 
 func TestTerminalStopUsesOnlyThatStopsFinalMessage(t *testing.T) {
 	a, fake, _ := testApp(t)
-	task, err := a.Delegate("luna-1", "Task")
+	task, err := a.Delegate("worker-1", "Task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("sol")
-	if err := a.HandleHook("stop", HookInput{SessionID: "sol-thread", CWD: "/repo/main"}); err != nil {
+	fake.setCurrent("brain")
+	if err := a.HandleHook("stop", HookInput{SessionID: "brain-thread", CWD: "/repo/main"}); err != nil {
 		t.Fatal(err)
 	}
 
 	intermediate := "intermediate response that must not become the handoff"
-	fake.setCurrent("luna-1")
+	fake.setCurrent("worker-1")
 	if err := a.HandleHook("stop", HookInput{SessionID: "worker-thread", CWD: task.Workspace, LastAssistantMessage: &intermediate}); err != nil {
 		t.Fatal(err)
 	}
@@ -437,14 +472,14 @@ func TestTerminalStopUsesOnlyThatStopsFinalMessage(t *testing.T) {
 	if strings.Contains(prompts[1].text, intermediate) {
 		t.Fatalf("stale intermediate message was relayed: %q", prompts[1].text)
 	}
-	if !strings.Contains(prompts[1].text, "Luna produced no final assistant message") {
+	if !strings.Contains(prompts[1].text, "Worker produced no final assistant message") {
 		t.Fatalf("missing empty-final fallback: %q", prompts[1].text)
 	}
 }
 
 func TestReserveOldestDeliveryIsFIFO(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	st := state.New("sol")
+	st := state.New("brain")
 	st.Deliveries["newer"] = &state.Delivery{ID: "newer", Status: state.DeliveryPending, CreatedAt: now.Add(time.Minute)}
 	st.Deliveries["older"] = &state.Delivery{ID: "older", Status: state.DeliveryPending, CreatedAt: now}
 	reserved := reserveOldestDelivery(&st, now.Add(2*time.Minute))
@@ -453,7 +488,7 @@ func TestReserveOldestDeliveryIsFIFO(t *testing.T) {
 	}
 }
 
-func TestDeliverRequeuesWhenSolStartedAnotherTurn(t *testing.T) {
+func TestDeliverRequeuesWhenBrainStartedAnotherTurn(t *testing.T) {
 	a, fake, clock := testApp(t)
 	messagePath := filepath.Join(a.Paths.HandoffsDir, "handoff.md")
 	if err := os.WriteFile(messagePath, []byte("handoff"), 0o600); err != nil {
@@ -461,13 +496,13 @@ func TestDeliverRequeuesWhenSolStartedAnotherTurn(t *testing.T) {
 	}
 	if err := a.Store.Update(func(st *state.State) error {
 		st.Deliveries["msg-one"] = &state.Delivery{
-			ID: "msg-one", WorkerSession: "luna-1", Workspace: "/repo/worktrees/luna-1",
+			ID: "msg-one", WorkerSession: "worker-1", Workspace: "/repo/worktrees/worker-1",
 			GoalStatus: "complete", MessagePath: messagePath, Status: state.DeliverySending,
 			CreatedAt: clock, ReservedAt: clock,
 		}
-		st.Sol.Busy = true
-		st.Sol.TurnID = "new-turn"
-		st.Sol.ReservedDelivery = "msg-one"
+		st.Brain.Busy = true
+		st.Brain.TurnID = "new-turn"
+		st.Brain.ReservedDelivery = "msg-one"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -477,14 +512,107 @@ func TestDeliverRequeuesWhenSolStartedAnotherTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(fake.prompts()) != initialPromptCount {
-		t.Fatal("handoff was injected into an active Sol turn")
+		t.Fatal("handoff was injected into an active Brain turn")
 	}
 	st, err := a.Store.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Deliveries["msg-one"].Status != state.DeliveryPending || st.Sol.ReservedDelivery != "" {
-		t.Fatalf("delivery was not requeued: delivery=%+v sol=%+v", st.Deliveries["msg-one"], st.Sol)
+	if st.Deliveries["msg-one"].Status != state.DeliveryPending || st.Brain.ReservedDelivery != "" {
+		t.Fatalf("delivery was not requeued: delivery=%+v brain=%+v", st.Deliveries["msg-one"], st.Brain)
+	}
+}
+
+func TestForceFlushRequeuesAndDeliversCurrentReservation(t *testing.T) {
+	a, fake, clock := testApp(t)
+	messagePath := filepath.Join(a.Paths.HandoffsDir, "force-handoff.md")
+	if err := os.WriteFile(messagePath, []byte("forced handoff"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Store.Update(func(st *state.State) error {
+		st.Deliveries["msg-force"] = &state.Delivery{
+			ID: "msg-force", WorkerSession: "worker-1", WorkerAlias: "worker-1",
+			MessagePath: messagePath, Status: state.DeliverySending,
+			CreatedAt: clock, ReservedAt: clock,
+		}
+		st.Brain.Busy = true
+		st.Brain.TurnID = "stale-turn"
+		st.Brain.ReservedDelivery = "msg-force"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	initialPrompts := len(fake.prompts())
+	deliveryID, err := a.Flush(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deliveryID != "msg-force" || len(fake.prompts()) != initialPrompts+1 {
+		t.Fatalf("force flush did not deliver reservation: id=%q prompts=%+v", deliveryID, fake.prompts())
+	}
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Deliveries["msg-force"].Status != state.DeliveryDelivered || st.Brain.ReservedDelivery != "" {
+		t.Fatalf("force flush left stale reservation: delivery=%+v brain=%+v", st.Deliveries["msg-force"], st.Brain)
+	}
+}
+
+func TestForceFlushInvalidatesAStillSleepingDeliveryLease(t *testing.T) {
+	a, fake, clock := testApp(t)
+	messagePath := filepath.Join(a.Paths.HandoffsDir, "leased-handoff.md")
+	if err := os.WriteFile(messagePath, []byte("single handoff"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Store.Update(func(st *state.State) error {
+		st.Deliveries["msg-lease"] = &state.Delivery{
+			ID: "msg-lease", WorkerSession: "worker-1", WorkerAlias: "worker-1",
+			MessagePath: messagePath, Status: state.DeliverySending, Attempts: 1,
+			CreatedAt: clock, ReservedAt: clock,
+		}
+		st.Brain.Busy = true
+		st.Brain.ReservedDelivery = "msg-lease"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	oldResult := make(chan error, 1)
+	go func() {
+		close(started)
+		oldResult <- a.DeliverLease("msg-lease", 1, 50*time.Millisecond)
+	}()
+	<-started
+	initialPrompts := len(fake.prompts())
+	if deliveryID, err := a.Flush(true); err != nil || deliveryID != "msg-lease" {
+		t.Fatalf("force flush failed: id=%q err=%v", deliveryID, err)
+	}
+	<-oldResult
+	if len(fake.prompts()) != initialPrompts+1 {
+		t.Fatalf("handoff was pasted more than once: %+v", fake.prompts())
+	}
+}
+
+func TestForceFlushRefusesDeliveryAlreadyBeingPasted(t *testing.T) {
+	a, fake, clock := testApp(t)
+	if err := a.Store.Update(func(st *state.State) error {
+		st.Deliveries["msg-pasting"] = &state.Delivery{
+			ID: "msg-pasting", Status: state.DeliveryPasting, Attempts: 1,
+			CreatedAt: clock, ReservedAt: clock,
+		}
+		st.Brain.Busy = true
+		st.Brain.ReservedDelivery = "msg-pasting"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	initialPrompts := len(fake.prompts())
+	if _, err := a.Flush(true); err == nil {
+		t.Fatal("force flush replaced an in-flight paste lease")
+	}
+	if len(fake.prompts()) != initialPrompts {
+		t.Fatal("force flush pasted while another helper owned the lease")
 	}
 }
 
@@ -498,12 +626,12 @@ func projectTestApp(t *testing.T, root, projectID string, fake *fakeTmux, clock 
 	paths := config.ForProject(base, projectID)
 	cfg := config.Default()
 	cfg.DeliveryDelayMS = 0
-	solSession := projectID + "--sol"
-	workerPattern := `^` + regexp.QuoteMeta(projectID+"--") + `luna-[1-9][0-9]*$`
-	store := state.NewProjectStore(paths, projectID, solSession)
+	brainSession := projectID + "--brain"
+	workerPattern := `^` + regexp.QuoteMeta(projectID+"--") + `worker-[1-9][0-9]*$`
+	store := state.NewProjectStore(paths, projectID, brainSession)
 	store.Now = func() time.Time { return clock }
 	a := &App{
-		ProjectID: projectID, BasePaths: base, Paths: paths, Config: cfg, SolSession: solSession,
+		ProjectID: projectID, BasePaths: base, Paths: paths, Config: cfg, BrainSession: brainSession,
 		Store: store, Tmux: fake, Executable: "/tmp/conductor", Now: func() time.Time { return clock },
 		workerRE: regexp.MustCompile(workerPattern),
 	}
@@ -519,28 +647,28 @@ func projectTestApp(t *testing.T, root, projectID string, fake *fakeTmux, clock 
 func TestNamedProjectsRouteIdenticalWorkerAliasesIndependently(t *testing.T) {
 	root := t.TempDir()
 	clock := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	fake := &fakeTmux{current: "project1--sol", panes: map[string]tmux.Pane{
-		"project1--sol":    {ID: "%10", Session: "project1--sol", Path: "/repo/project1", Command: "codex", Active: true},
-		"project1--luna-1": {ID: "%11", Session: "project1--luna-1", Path: "/repo/project1-wt/luna-1", Command: "codex", Active: true},
-		"project2--sol":    {ID: "%20", Session: "project2--sol", Path: "/repo/project2", Command: "codex", Active: true},
-		"project2--luna-1": {ID: "%21", Session: "project2--luna-1", Path: "/repo/project2-wt/luna-1", Command: "codex", Active: true},
+	fake := &fakeTmux{current: "project1--brain", panes: map[string]tmux.Pane{
+		"project1--brain":    {ID: "%10", Session: "project1--brain", Path: "/repo/project1", Command: "codex", Active: true},
+		"project1--worker-1": {ID: "%11", Session: "project1--worker-1", Path: "/repo/project1-wt/worker-1", Command: "codex", Active: true},
+		"project2--brain":    {ID: "%20", Session: "project2--brain", Path: "/repo/project2", Command: "codex", Active: true},
+		"project2--worker-1": {ID: "%21", Session: "project2--worker-1", Path: "/repo/project2-wt/worker-1", Command: "codex", Active: true},
 	}}
 	project1 := projectTestApp(t, root, "project1", fake, clock)
 	project2 := projectTestApp(t, root, "project2", fake, clock)
 
-	project1Task, err := project1.Delegate("luna-1", "Project1 task")
+	project1Task, err := project1.Delegate("worker-1", "Project1 task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("project2--sol")
-	project2Task, err := project2.Delegate("luna-1", "Project2 task")
+	fake.setCurrent("project2--brain")
+	project2Task, err := project2.Delegate("worker-1", "Project2 task")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if project1Task.WorkerSession != "project1--luna-1" || project1Task.WorkerAlias != "luna-1" {
+	if project1Task.WorkerSession != "project1--worker-1" || project1Task.WorkerAlias != "worker-1" {
 		t.Fatalf("unexpected project1 routing: %+v", project1Task)
 	}
-	if project2Task.WorkerSession != "project2--luna-1" || project2Task.WorkerAlias != "luna-1" {
+	if project2Task.WorkerSession != "project2--worker-1" || project2Task.WorkerAlias != "worker-1" {
 		t.Fatalf("unexpected project2 routing: %+v", project2Task)
 	}
 
@@ -552,7 +680,7 @@ func TestNamedProjectsRouteIdenticalWorkerAliasesIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ActiveTaskForWorker(&project1State, "project2--luna-1") != nil || state.ActiveTaskForWorker(&project2State, "project1--luna-1") != nil {
+	if state.ActiveTaskForWorker(&project1State, "project2--worker-1") != nil || state.ActiveTaskForWorker(&project2State, "project1--worker-1") != nil {
 		t.Fatal("project state leaked across namespaces")
 	}
 	if project1.Paths.State == project2.Paths.State {
@@ -565,24 +693,24 @@ func TestNamedProjectsRouteIdenticalWorkerAliasesIndependently(t *testing.T) {
 	}
 }
 
-func TestNamedProjectHandoffReturnsOnlyToItsSol(t *testing.T) {
+func TestNamedProjectHandoffReturnsOnlyToItsBrain(t *testing.T) {
 	root := t.TempDir()
 	clock := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	fake := &fakeTmux{current: "project1--sol", panes: map[string]tmux.Pane{
-		"project1--sol":    {ID: "%10", Session: "project1--sol", Path: "/repo/project1", Command: "codex", Active: true},
-		"project1--luna-1": {ID: "%11", Session: "project1--luna-1", Path: "/repo/project1-wt/luna-1", Command: "codex", Active: true},
-		"project2--sol":    {ID: "%20", Session: "project2--sol", Path: "/repo/project2", Command: "codex", Active: true},
+	fake := &fakeTmux{current: "project1--brain", panes: map[string]tmux.Pane{
+		"project1--brain":    {ID: "%10", Session: "project1--brain", Path: "/repo/project1", Command: "codex", Active: true},
+		"project1--worker-1": {ID: "%11", Session: "project1--worker-1", Path: "/repo/project1-wt/worker-1", Command: "codex", Active: true},
+		"project2--brain":    {ID: "%20", Session: "project2--brain", Path: "/repo/project2", Command: "codex", Active: true},
 	}}
 	project1 := projectTestApp(t, root, "project1", fake, clock)
-	task, err := project1.Delegate("luna-1", "Investigate")
+	task, err := project1.Delegate("worker-1", "Investigate")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("project1--sol")
-	if err := project1.HandleHook("stop", HookInput{SessionID: "project1-sol-thread", CWD: "/repo/project1"}); err != nil {
+	fake.setCurrent("project1--brain")
+	if err := project1.HandleHook("stop", HookInput{SessionID: "project1-brain-thread", CWD: "/repo/project1"}); err != nil {
 		t.Fatal(err)
 	}
-	fake.setCurrent("project1--luna-1")
+	fake.setCurrent("project1--worker-1")
 	if err := project1.HandleHook("post-tool-use", HookInput{
 		SessionID: "project1-worker-thread", CWD: task.Workspace, TurnID: "worker-turn",
 		ToolName: "update_goal", ToolInput: json.RawMessage(`{"status":"complete"}`),
@@ -590,7 +718,7 @@ func TestNamedProjectHandoffReturnsOnlyToItsSol(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	handoff := "Structured handoff chosen by Sol."
+	handoff := "Structured handoff chosen by Brain."
 	if err := project1.HandleHook("stop", HookInput{SessionID: "project1-worker-thread", CWD: task.Workspace, TurnID: "worker-turn", LastAssistantMessage: &handoff}); err != nil {
 		t.Fatal(err)
 	}
@@ -599,9 +727,9 @@ func TestNamedProjectHandoffReturnsOnlyToItsSol(t *testing.T) {
 		t.Fatalf("expected goal and handoff, got %+v", prompts)
 	}
 	if prompts[1].target != "%10" {
-		t.Fatalf("handoff targeted the wrong Sol pane: %+v", prompts[1])
+		t.Fatalf("handoff targeted the wrong Brain pane: %+v", prompts[1])
 	}
-	if strings.Contains(prompts[1].text, "project1--luna-1") || !strings.Contains(prompts[1].text, "[CONDUCTOR HANDOFF | luna-1 | complete]") {
+	if strings.Contains(prompts[1].text, "project1--worker-1") || !strings.Contains(prompts[1].text, "[CONDUCTOR HANDOFF | worker-1 | complete]") {
 		t.Fatalf("handoff leaked transport namespace or lost alias: %q", prompts[1].text)
 	}
 }

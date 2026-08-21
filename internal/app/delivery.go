@@ -13,12 +13,12 @@ import (
 	"github.com/maxcorrads/conductor/internal/state"
 )
 
-func (a *App) SpawnDelivery(deliveryID string, delay time.Duration) error {
+func (a *App) SpawnDelivery(deliveryID string, attempt int, delay time.Duration) error {
 	logFile, err := os.OpenFile(a.Paths.Log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(a.Executable, "_deliver", deliveryID, "--project", a.ProjectID, "--delay-ms", strconv.FormatInt(delay.Milliseconds(), 10))
+	cmd := exec.Command(a.Executable, "_deliver", deliveryID, "--attempt", strconv.Itoa(attempt), "--project", a.ProjectID, "--delay-ms", strconv.FormatInt(delay.Milliseconds(), 10))
 	cmd.Env = os.Environ()
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -34,9 +34,6 @@ func (a *App) SpawnDelivery(deliveryID string, delay time.Duration) error {
 }
 
 func (a *App) Deliver(deliveryID string, delay time.Duration) error {
-	if delay > 0 {
-		time.Sleep(delay)
-	}
 	st, err := a.Store.Read()
 	if err != nil {
 		return err
@@ -45,36 +42,65 @@ func (a *App) Deliver(deliveryID string, delay time.Duration) error {
 	if delivery == nil {
 		return fmt.Errorf("unknown delivery %s", deliveryID)
 	}
-	if delivery.Status == state.DeliveryDelivered {
-		return nil
+	return a.DeliverLease(deliveryID, delivery.Attempts, delay)
+}
+
+func (a *App) DeliverLease(deliveryID string, expectedAttempt int, delay time.Duration) error {
+	if delay > 0 {
+		time.Sleep(delay)
 	}
-	if delivery.Status != state.DeliverySending {
-		return fmt.Errorf("delivery %s is %s, not sending", deliveryID, delivery.Status)
-	}
-	if st.Sol.ReservedDelivery != deliveryID {
-		return fmt.Errorf("delivery %s is no longer reserved for Sol", deliveryID)
-	}
-	if st.Sol.TurnID != "" {
-		if err := a.requeueDelivery(deliveryID, "Sol started another turn before the handoff could be pasted"); err != nil {
-			return err
+	var claimed *state.Delivery
+	if err := a.Store.Update(func(st *state.State) error {
+		delivery := st.Deliveries[deliveryID]
+		if delivery == nil {
+			return fmt.Errorf("unknown delivery %s", deliveryID)
 		}
+		if delivery.Status == state.DeliveryDelivered {
+			return nil
+		}
+		if delivery.Attempts != expectedAttempt {
+			return fmt.Errorf("delivery %s lease changed: expected attempt %d, found %d", deliveryID, expectedAttempt, delivery.Attempts)
+		}
+		if delivery.Status != state.DeliverySending {
+			return fmt.Errorf("delivery %s is %s, not sending", deliveryID, delivery.Status)
+		}
+		if st.Brain.ReservedDelivery != deliveryID {
+			return fmt.Errorf("delivery %s is no longer reserved for Brain", deliveryID)
+		}
+		if st.Brain.TurnID != "" {
+			delivery.Status = state.DeliveryPending
+			delivery.LastError = "Brain started another turn before the handoff could be pasted"
+			delivery.ReservedAt = time.Time{}
+			st.Brain.ReservedDelivery = ""
+			st.Brain.Busy = true
+			st.Brain.UpdatedAt = a.Now().UTC()
+			return nil
+		}
+		delivery.Status = state.DeliveryPasting
+		copyDelivery := *delivery
+		claimed = &copyDelivery
 		return nil
-	}
-	raw, err := os.ReadFile(delivery.MessagePath)
-	if err != nil {
-		a.releaseDelivery(deliveryID, err)
+	}); err != nil {
 		return err
 	}
-	pane, err := a.Tmux.ResolvePane(a.SolSession)
+	if claimed == nil {
+		return nil
+	}
+	raw, err := os.ReadFile(claimed.MessagePath)
 	if err != nil {
-		a.releaseDelivery(deliveryID, err)
+		a.releaseDeliveryLease(deliveryID, expectedAttempt, err)
+		return err
+	}
+	pane, err := a.Tmux.ResolvePane(a.BrainSession)
+	if err != nil {
+		a.releaseDeliveryLease(deliveryID, expectedAttempt, err)
 		return err
 	}
 	paneID := pane.ID
-	prompt := formatHandoff(delivery, string(raw))
+	prompt := formatHandoff(claimed, string(raw))
 	if err := a.Tmux.SendPrompt(paneID, prompt); err != nil {
 		// The stored pane may have changed after a tmux restart; retry using the active pane.
-		pane, resolveErr := a.Tmux.ResolvePane(a.SolSession)
+		pane, resolveErr := a.Tmux.ResolvePane(a.BrainSession)
 		if resolveErr == nil && pane.ID != paneID {
 			if retryErr := a.Tmux.SendPrompt(pane.ID, prompt); retryErr == nil {
 				paneID = pane.ID
@@ -82,7 +108,7 @@ func (a *App) Deliver(deliveryID string, delay time.Duration) error {
 			}
 		}
 		if err != nil {
-			a.releaseDelivery(deliveryID, err)
+			a.releaseDeliveryLease(deliveryID, expectedAttempt, err)
 			return err
 		}
 	}
@@ -90,18 +116,21 @@ func (a *App) Deliver(deliveryID string, delay time.Duration) error {
 	return a.Store.Update(func(st *state.State) error {
 		d := st.Deliveries[deliveryID]
 		if d == nil {
-			return nil
+			return fmt.Errorf("delivery %s disappeared while pasting", deliveryID)
+		}
+		if d.Attempts != expectedAttempt || d.Status != state.DeliveryPasting || st.Brain.ReservedDelivery != deliveryID {
+			return fmt.Errorf("delivery %s lease changed while pasting", deliveryID)
 		}
 		d.Status = state.DeliveryDelivered
 		d.DeliveredAt = now
 		d.LastError = ""
-		if st.Sol.ReservedDelivery == deliveryID {
-			st.Sol.ReservedDelivery = ""
+		if st.Brain.ReservedDelivery == deliveryID {
+			st.Brain.ReservedDelivery = ""
 		}
-		st.Sol.Pane = paneID
+		st.Brain.Pane = paneID
 		// Keep busy=true. UserPromptSubmit will confirm it, and Stop will clear it.
-		st.Sol.Busy = true
-		st.Sol.UpdatedAt = now
+		st.Brain.Busy = true
+		st.Brain.UpdatedAt = now
 		return nil
 	})
 }
@@ -120,40 +149,40 @@ func formatHandoff(delivery *state.Delivery, raw string) string {
 }
 
 func (a *App) releaseDelivery(deliveryID string, cause error) {
+	st, err := a.Store.Read()
+	if err != nil {
+		return
+	}
+	delivery := st.Deliveries[deliveryID]
+	if delivery == nil {
+		return
+	}
+	a.releaseDeliveryLease(deliveryID, delivery.Attempts, cause)
+}
+
+func (a *App) releaseDeliveryLease(deliveryID string, expectedAttempt int, cause error) {
 	_ = a.Store.Update(func(st *state.State) error {
 		d := st.Deliveries[deliveryID]
-		if d != nil && d.Status != state.DeliveryDelivered {
+		if d != nil && d.Attempts == expectedAttempt && d.Status != state.DeliveryDelivered {
 			d.Status = state.DeliveryPending
 			d.LastError = cause.Error()
+			d.ReservedAt = time.Time{}
 		}
-		if st.Sol.ReservedDelivery == deliveryID {
-			st.Sol.ReservedDelivery = ""
-			st.Sol.Busy = st.Sol.TurnID != ""
+		if d != nil && d.Attempts == expectedAttempt && st.Brain.ReservedDelivery == deliveryID {
+			st.Brain.ReservedDelivery = ""
+			st.Brain.Busy = st.Brain.TurnID != ""
 		}
-		st.Sol.UpdatedAt = a.Now().UTC()
+		st.Brain.UpdatedAt = a.Now().UTC()
 		return nil
 	})
 	a.Logf("delivery %s failed: %v", deliveryID, cause)
 }
 
-func (a *App) requeueDelivery(deliveryID, reason string) error {
-	now := a.Now().UTC()
-	return a.Store.Update(func(st *state.State) error {
-		delivery := st.Deliveries[deliveryID]
-		if delivery != nil && delivery.Status != state.DeliveryDelivered {
-			delivery.Status = state.DeliveryPending
-			delivery.LastError = reason
-		}
-		if st.Sol.ReservedDelivery == deliveryID {
-			st.Sol.ReservedDelivery = ""
-		}
-		st.Sol.Busy = st.Sol.TurnID != ""
-		st.Sol.UpdatedAt = now
-		return nil
-	})
+func (a *App) FinishWorker(worker, explicitMessage, goalStatus string) (string, error) {
+	return a.FinishWorkerTask(worker, "", explicitMessage, goalStatus)
 }
 
-func (a *App) FinishWorker(worker, explicitMessage, goalStatus string) (string, error) {
+func (a *App) FinishWorkerTask(worker, expectedTaskID, explicitMessage, goalStatus string) (string, error) {
 	workerSession, _, err := a.ResolveWorkerSession(worker)
 	if err != nil {
 		return "", err
@@ -168,6 +197,9 @@ func (a *App) FinishWorker(worker, explicitMessage, goalStatus string) (string, 
 	task := state.ActiveTaskForWorker(&st, workerSession)
 	if task == nil {
 		return "", fmt.Errorf("%s has no active task", workerSession)
+	}
+	if expectedTaskID != "" && task.ID != expectedTaskID {
+		return "", fmt.Errorf("active task changed for %s: expected %s, found %s", workerSession, expectedTaskID, task.ID)
 	}
 	if goalStatus == "" {
 		goalStatus = "manual"
@@ -213,6 +245,7 @@ func (a *App) finishTask(taskID, explicitMessage, goalStatus string, useCachedMe
 	}
 
 	deliverNowID := ""
+	deliverNowAttempt := 0
 	if err := a.Store.Update(func(st *state.State) error {
 		current := st.Tasks[taskID]
 		if current == nil || current.Status != state.TaskRunning {
@@ -239,9 +272,10 @@ func (a *App) finishTask(taskID, explicitMessage, goalStatus string, useCachedMe
 			workerState.Busy = false
 			workerState.UpdatedAt = now
 		}
-		if !st.Sol.Busy && st.Sol.ReservedDelivery == "" {
+		if !st.Brain.Busy && st.Brain.ReservedDelivery == "" {
 			if reserved := reserveOldestDelivery(st, now); reserved != nil {
 				deliverNowID = reserved.ID
+				deliverNowAttempt = reserved.Attempts
 			}
 		}
 		return nil
@@ -250,7 +284,7 @@ func (a *App) finishTask(taskID, explicitMessage, goalStatus string, useCachedMe
 		return "", err
 	}
 	if deliverNowID != "" {
-		if err := a.Deliver(deliverNowID, time.Duration(a.Config.DeliveryDelayMS)*time.Millisecond); err != nil {
+		if err := a.DeliverLease(deliverNowID, deliverNowAttempt, time.Duration(a.Config.DeliveryDelayMS)*time.Millisecond); err != nil {
 			return deliveryID, err
 		}
 	}
@@ -259,18 +293,22 @@ func (a *App) finishTask(taskID, explicitMessage, goalStatus string, useCachedMe
 
 func (a *App) Flush(force bool) (string, error) {
 	var deliveryID string
+	var deliveryAttempt int
 	now := a.Now().UTC()
 	if err := a.Store.Update(func(st *state.State) error {
 		if force {
-			st.Sol.Busy = false
-			st.Sol.TurnID = ""
-			st.Sol.ReservedDelivery = ""
+			if err := requeueBrainReservation(st, "reservation reset by force delivery"); err != nil {
+				return err
+			}
+			st.Brain.Busy = false
+			st.Brain.TurnID = ""
 		}
-		if st.Sol.Busy {
-			return errors.New("Sol is busy; handoff remains queued")
+		if st.Brain.Busy {
+			return errors.New("Brain is busy; handoff remains queued")
 		}
 		if delivery := reserveOldestDelivery(st, now); delivery != nil {
 			deliveryID = delivery.ID
+			deliveryAttempt = delivery.Attempts
 		}
 		return nil
 	}); err != nil {
@@ -279,21 +317,34 @@ func (a *App) Flush(force bool) (string, error) {
 	if deliveryID == "" {
 		return "", nil
 	}
-	return deliveryID, a.Deliver(deliveryID, 0)
+	return deliveryID, a.DeliverLease(deliveryID, deliveryAttempt, 0)
 }
 
-func (a *App) MarkSolIdle() error {
+func (a *App) MarkBrainIdle() error {
 	return a.Store.Update(func(st *state.State) error {
-		if st.Sol.ReservedDelivery != "" {
-			if d := st.Deliveries[st.Sol.ReservedDelivery]; d != nil && d.Status == state.DeliverySending {
-				d.Status = state.DeliveryPending
-				d.LastError = "reservation reset manually"
-			}
+		if err := requeueBrainReservation(st, "reservation reset manually"); err != nil {
+			return err
 		}
-		st.Sol.ReservedDelivery = ""
-		st.Sol.Busy = false
-		st.Sol.TurnID = ""
-		st.Sol.UpdatedAt = a.Now().UTC()
+		st.Brain.Busy = false
+		st.Brain.TurnID = ""
+		st.Brain.UpdatedAt = a.Now().UTC()
 		return nil
 	})
+}
+
+func requeueBrainReservation(st *state.State, reason string) error {
+	if st.Brain.ReservedDelivery != "" {
+		if delivery := st.Deliveries[st.Brain.ReservedDelivery]; delivery != nil {
+			if delivery.Status == state.DeliveryPasting {
+				return fmt.Errorf("delivery %s is currently being pasted; wait for it to finish", delivery.ID)
+			}
+			if delivery.Status == state.DeliverySending {
+				delivery.Status = state.DeliveryPending
+				delivery.LastError = reason
+				delivery.ReservedAt = time.Time{}
+			}
+		}
+	}
+	st.Brain.ReservedDelivery = ""
+	return nil
 }

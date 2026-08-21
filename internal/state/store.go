@@ -14,21 +14,21 @@ import (
 )
 
 type Store struct {
-	Paths      config.Paths
-	ProjectID  string
-	SolSession string
-	Now        func() time.Time
+	Paths        config.Paths
+	ProjectID    string
+	BrainSession string
+	Now          func() time.Time
 }
 
-func NewStore(paths config.Paths, solSession string) *Store {
-	return NewProjectStore(paths, "default", solSession)
+func NewStore(paths config.Paths, brainSession string) *Store {
+	return NewProjectStore(paths, "default", brainSession)
 }
 
-func NewProjectStore(paths config.Paths, projectID, solSession string) *Store {
+func NewProjectStore(paths config.Paths, projectID, brainSession string) *Store {
 	if projectID == "" {
 		projectID = "default"
 	}
-	return &Store{Paths: paths, ProjectID: projectID, SolSession: solSession, Now: time.Now}
+	return &Store{Paths: paths, ProjectID: projectID, BrainSession: brainSession, Now: time.Now}
 }
 
 func (s *Store) Init() error {
@@ -67,17 +67,17 @@ func (s *Store) Update(fn func(*State) error) error {
 func (s *Store) loadUnlocked() (State, error) {
 	data, err := os.ReadFile(s.Paths.State)
 	if errors.Is(err, os.ErrNotExist) {
-		return NewForProject(s.ProjectID, s.SolSession), nil
+		return NewForProject(s.ProjectID, s.BrainSession), nil
 	}
 	if err != nil {
 		return State{}, fmt.Errorf("read state: %w", err)
 	}
-	st := NewForProject(s.ProjectID, s.SolSession)
+	st := NewForProject(s.ProjectID, s.BrainSession)
 	if err := json.Unmarshal(data, &st); err != nil {
 		return State{}, fmt.Errorf("parse state: %w", err)
 	}
 	if st.Version != CurrentVersion {
-		return State{}, fmt.Errorf("unsupported state version %d", st.Version)
+		return State{}, fmt.Errorf("unsupported state version %d in %s (expected %d); move the old data aside to start clean", st.Version, s.Paths.State, CurrentVersion)
 	}
 	if st.Workers == nil {
 		st.Workers = map[string]*Worker{}
@@ -88,12 +88,11 @@ func (s *Store) loadUnlocked() (State, error) {
 	if st.Deliveries == nil {
 		st.Deliveries = map[string]*Delivery{}
 	}
-	if st.Sol.Session == "" {
-		st.Sol.Session = s.SolSession
+	if st.Brain.Session == "" {
+		st.Brain.Session = s.BrainSession
 	}
 	if st.ProjectID == "" {
-		// v0.1 states predate project namespaces and intentionally have no
-		// project_id. Treat them as belonging to the store that loaded them.
+		// A current state without a project_id belongs to the store that loaded it.
 		st.ProjectID = s.ProjectID
 	} else if st.ProjectID != s.ProjectID {
 		return State{}, fmt.Errorf("state belongs to project %q, not %q", st.ProjectID, s.ProjectID)
@@ -134,16 +133,16 @@ func (s *Store) saveUnlocked(st State) error {
 func (s *Store) recoverStaleSending(st *State) {
 	now := s.Now()
 	for _, d := range st.Deliveries {
-		if d.Status == DeliverySending && !d.ReservedAt.IsZero() && now.Sub(d.ReservedAt) > 2*time.Minute {
+		if (d.Status == DeliverySending || d.Status == DeliveryPasting) && !d.ReservedAt.IsZero() && now.Sub(d.ReservedAt) > 2*time.Minute {
 			d.Status = DeliveryPending
 			d.LastError = "recovered stale delivery reservation"
 		}
 	}
-	if st.Sol.ReservedDelivery != "" {
-		d, ok := st.Deliveries[st.Sol.ReservedDelivery]
-		if !ok || d.Status != DeliverySending {
-			st.Sol.ReservedDelivery = ""
-			st.Sol.Busy = st.Sol.TurnID != ""
+	if st.Brain.ReservedDelivery != "" {
+		d, ok := st.Deliveries[st.Brain.ReservedDelivery]
+		if !ok || (d.Status != DeliverySending && d.Status != DeliveryPasting) {
+			st.Brain.ReservedDelivery = ""
+			st.Brain.Busy = st.Brain.TurnID != ""
 		}
 	}
 }

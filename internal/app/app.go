@@ -21,16 +21,16 @@ import (
 )
 
 type App struct {
-	ProjectID  string
-	BasePaths  config.Paths
-	Paths      config.Paths
-	Config     config.Config
-	SolSession string
-	Store      *state.Store
-	Tmux       tmux.Client
-	Executable string
-	Now        func() time.Time
-	workerRE   *regexp.Regexp
+	ProjectID    string
+	BasePaths    config.Paths
+	Paths        config.Paths
+	Config       config.Config
+	BrainSession string
+	Store        *state.Store
+	Tmux         tmux.Client
+	Executable   string
+	Now          func() time.Time
+	workerRE     *regexp.Regexp
 }
 
 func New() (*App, error) {
@@ -39,8 +39,7 @@ func New() (*App, error) {
 
 // NewForProject constructs a project-scoped Conductor instance. An empty
 // project name is inferred from the current tmux session, then from
-// CONDUCTOR_PROJECT, and finally falls back to the backwards-compatible
-// default project.
+// CONDUCTOR_PROJECT, and finally falls back to the default project.
 func NewForProject(requestedProject string) (*App, error) {
 	basePaths, err := config.ResolvePaths()
 	if err != nil {
@@ -54,14 +53,13 @@ func NewForProject(requestedProject string) (*App, error) {
 		return nil, err
 	}
 	tmuxClient := tmux.NewWithGoalDispatchOptions(cfg.TmuxCommand, tmux.GoalDispatchOptions{
-		ClearDelay:          time.Duration(cfg.GoalClearDelayMS) * time.Millisecond,
 		PrefixDelay:         time.Duration(cfg.GoalPrefixDelayMS) * time.Millisecond,
 		ReplaceProbeTimeout: time.Duration(cfg.GoalReplaceProbeMS) * time.Millisecond,
 	})
 	projectID := strings.TrimSpace(requestedProject)
 	if projectID == "" {
 		if session, _, currentErr := tmuxClient.CurrentSession(); currentErr == nil {
-			if parsed, ok := project.ParseSession(session, cfg.SolSession, cfg.WorkerSessionPattern); ok {
+			if parsed, ok := project.ParseSession(session, cfg.BrainSession, cfg.WorkerSessionPattern); ok {
 				projectID = parsed.ProjectID
 			}
 		}
@@ -80,7 +78,7 @@ func NewForProject(requestedProject string) (*App, error) {
 	if err := config.EnsureDirectories(paths); err != nil {
 		return nil, err
 	}
-	solSession := project.SolSession(projectID, cfg.SolSession)
+	brainSession := project.BrainSession(projectID, cfg.BrainSession)
 	workerPattern := project.WorkerPattern(projectID, cfg.WorkerSessionPattern)
 	workerRE, err := regexp.Compile(workerPattern)
 	if err != nil {
@@ -91,18 +89,18 @@ func NewForProject(requestedProject string) (*App, error) {
 		return nil, fmt.Errorf("resolve conductor executable: %w", err)
 	}
 	executable, _ = filepath.Abs(executable)
-	store := state.NewProjectStore(paths, projectID, solSession)
+	store := state.NewProjectStore(paths, projectID, brainSession)
 	return &App{
-		ProjectID:  projectID,
-		BasePaths:  basePaths,
-		Paths:      paths,
-		Config:     cfg,
-		SolSession: solSession,
-		Store:      store,
-		Tmux:       tmuxClient,
-		Executable: executable,
-		Now:        time.Now,
-		workerRE:   workerRE,
+		ProjectID:    projectID,
+		BasePaths:    basePaths,
+		Paths:        paths,
+		Config:       cfg,
+		BrainSession: brainSession,
+		Store:        store,
+		Tmux:         tmuxClient,
+		Executable:   executable,
+		Now:          time.Now,
+		workerRE:     workerRE,
 	}, nil
 }
 
@@ -118,6 +116,9 @@ func (a *App) Init() error {
 }
 
 func (a *App) IsWorkerSession(session string) bool {
+	if a.ProjectID == project.DefaultID && strings.Contains(session, project.SessionSeparator) {
+		return false
+	}
 	return a.workerRE.MatchString(session)
 }
 
@@ -142,7 +143,7 @@ func (a *App) Delegate(worker, objective string) (*state.Task, error) {
 	}
 	senderSession, senderPane, _ := a.Tmux.CurrentSession()
 	if senderSession == "" {
-		senderSession = a.SolSession
+		senderSession = a.BrainSession
 	}
 
 	now := a.Now().UTC()
@@ -180,11 +181,11 @@ func (a *App) Delegate(worker, objective string) (*state.Task, error) {
 		}
 		st.Tasks[task.ID] = task
 		st.Workers[workerSession] = &state.Worker{Session: workerSession, Pane: pane.ID, CWD: pane.Path, Busy: true, UpdatedAt: now}
-		if senderSession == a.SolSession {
-			st.Sol.Session = senderSession
-			st.Sol.Pane = senderPane
-			st.Sol.Busy = true
-			st.Sol.UpdatedAt = now
+		if senderSession == a.BrainSession {
+			st.Brain.Session = senderSession
+			st.Brain.Pane = senderPane
+			st.Brain.Busy = true
+			st.Brain.UpdatedAt = now
 		}
 		return nil
 	}); err != nil {
@@ -258,13 +259,13 @@ func (a *App) StatusText() (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Project: %s\n", a.ProjectID)
-	solState := "idle"
-	if st.Sol.Busy {
-		solState = "busy"
+	brainState := "idle"
+	if st.Brain.Busy {
+		brainState = "busy"
 	}
-	fmt.Fprintf(&b, "Sol: %s (%s)", st.Sol.Session, solState)
-	if st.Sol.Pane != "" {
-		fmt.Fprintf(&b, " pane=%s", st.Sol.Pane)
+	fmt.Fprintf(&b, "Brain: %s (%s)", st.Brain.Session, brainState)
+	if st.Brain.Pane != "" {
+		fmt.Fprintf(&b, " pane=%s", st.Brain.Pane)
 	}
 	b.WriteByte('\n')
 

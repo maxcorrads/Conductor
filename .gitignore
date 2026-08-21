@@ -3,6 +3,8 @@
 /dist/CHECKSUMS.txt
 /build/
 /release/
+/macos/ConductorApp/.build/
+/macos/ConductorApp/.swiftpm/
 /coverage.out
 *.test
 *.prof

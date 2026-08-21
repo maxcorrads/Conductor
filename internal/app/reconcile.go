@@ -57,7 +57,7 @@ func (a *App) ReconcileTask(taskID, token string, delay time.Duration) error {
 
 		message := cachedAssistantMessage(task)
 		if strings.TrimSpace(message) == "" {
-			message = "(Luna produced no final assistant message.)"
+			message = "(Worker produced no final assistant message.)"
 		}
 		_, err := a.finishTask(taskID, message, goalEvent.Status, false, func(st *state.State, current *state.Task) error {
 			if err := reconciliationGuard(st, current, token); err != nil {
@@ -147,6 +147,18 @@ func (a *App) lookupPersistedGoal(task *state.Task, sessionID, transcriptPath st
 	checked := false
 	if transcriptPath != "" {
 		checked = true
+		persisted, persistedFound, persistedErr := transcript.LatestGoalEventForThread(
+			transcriptPath,
+			sessionID,
+			task.CreatedAt,
+			a.Config.TranscriptTailBytes,
+		)
+		if persistedErr != nil {
+			a.Logf("parse unfiltered goal status for %s: %v", task.ID, persistedErr)
+			lookupErrors = append(lookupErrors, persistedErr)
+		} else if persistedFound && persisted.Objective != "" && !transcript.ObjectivesMatch(persisted.Objective, task.SentGoalObjective) {
+			return transcript.GoalEvent{}, false, true, errors.New("persisted Codex goal objective does not match active task")
+		}
 		goalEvent, found, err := transcript.LatestGoalEvent(
 			transcriptPath,
 			sessionID,
@@ -170,7 +182,7 @@ func (a *App) lookupPersistedGoal(task *state.Task, sessionID, transcriptPath st
 	} else if dbFound && (dbEvent.Objective == "" || transcript.ObjectivesMatch(dbEvent.Objective, task.SentGoalObjective)) {
 		return dbEvent, true, true, nil
 	} else if dbFound {
-		a.Logf("ignore goal DB status for %s: objective does not match active task", task.ID)
+		return transcript.GoalEvent{}, false, true, errors.New("persisted Codex goal objective does not match active task")
 	}
 	return transcript.GoalEvent{}, false, checked, errors.Join(lookupErrors...)
 }
