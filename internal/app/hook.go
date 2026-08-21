@@ -77,12 +77,12 @@ func (a *App) handlePostToolUse(role resolvedRole, input HookInput) error {
 		return nil
 	}
 	status, ok := goalStatusFromToolInput(input.ToolInput)
-	if !ok || !a.isTerminalGoalStatus(status) {
+	if !ok {
 		return nil
 	}
 	// PostToolUse also fires for failed local function calls. When Codex provides
 	// a response, require the goal object in that response to confirm the status;
-	// otherwise a failed update_goal attempt could end the worker prematurely.
+	// otherwise a failed update_goal attempt could alter task lifecycle state.
 	if len(input.ToolResponse) > 0 && string(input.ToolResponse) != "null" {
 		confirmed, confirmedOK := goalStatusFromToolResponse(input.ToolResponse)
 		if !confirmedOK || confirmed != status {
@@ -95,9 +95,19 @@ func (a *App) handlePostToolUse(role resolvedRole, input HookInput) error {
 		if task == nil {
 			return nil
 		}
-		task.PendingGoalStatus = status
-		task.PendingGoalTurnID = input.TurnID
-		task.PendingGoalAt = now
+		task.ObservedGoalStatus = status
+		task.GoalObservedAt = now
+		task.ReconcileToken = ""
+		task.LastError = ""
+		if a.isTerminalGoalStatus(status) {
+			task.PendingGoalStatus = status
+			task.PendingGoalTurnID = input.TurnID
+			task.PendingGoalAt = now
+		} else {
+			task.PendingGoalStatus = ""
+			task.PendingGoalTurnID = ""
+			task.PendingGoalAt = time.Time{}
+		}
 		task.CodexSessionID = input.SessionID
 		task.UpdatedAt = now
 		worker := st.Workers[role.Session]
@@ -265,6 +275,9 @@ func (a *App) handlePromptSubmit(role resolvedRole, input HookInput) error {
 			worker.UpdatedAt = now
 			if task := state.ActiveTaskForWorker(st, role.Session); task != nil {
 				task.CodexSessionID = input.SessionID
+				// Any later worker turn invalidates an implicit-completion check
+				// scheduled by the preceding Stop.
+				task.ReconcileToken = ""
 				task.UpdatedAt = now
 			}
 		}
@@ -328,9 +341,12 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 		message = *input.LastAssistantMessage
 	}
 	cachePath := filepath.Join(a.Paths.CacheDir, task.ID+"-last-assistant.md")
+	messageCached := false
 	if message != "" {
 		if err := writePrivate(cachePath, []byte(message)); err != nil {
 			a.Logf("cache worker message for %s: %v", task.ID, err)
+		} else {
+			messageCached = true
 		}
 	}
 
@@ -352,105 +368,77 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 		}
 		found = true
 	} else if !pendingTurnMismatch {
-		var parseErr error
-		goalEvent, found, parseErr = transcript.LatestGoalEvent(
-			transcriptPath,
-			input.SessionID,
-			task.SentGoalObjective,
-			task.CreatedAt,
-			a.Config.TranscriptTailBytes,
-		)
-		if parseErr != nil {
-			a.Logf("parse goal status for %s: %v", task.ID, parseErr)
+		var lookupErr error
+		goalEvent, found, _, lookupErr = a.lookupPersistedGoal(task, input.SessionID, transcriptPath)
+		if lookupErr != nil {
+			a.Logf("initial goal reconciliation for %s: %v", task.ID, lookupErr)
 		}
 	} else {
 		a.Logf("ignore terminal goal status for %s: update_goal turn %q does not match Stop turn %q", task.ID, task.PendingGoalTurnID, input.TurnID)
 	}
-	if !found && !pendingTurnMismatch {
-		if dbEvent, dbFound, dbErr := transcript.GoalStatusFromSQLite(input.SessionID); dbErr != nil {
-			a.Logf("read goal DB for %s: %v", task.ID, dbErr)
-		} else if dbFound && (dbEvent.Objective == "" || transcript.ObjectivesMatch(dbEvent.Objective, task.SentGoalObjective)) {
-			goalEvent, found = dbEvent, true
-		} else if dbFound {
-			a.Logf("ignore goal DB status for %s: objective does not match active task", task.ID)
-		}
-	}
-	terminal := found && a.isTerminalGoalStatus(goalEvent.Status)
 
-	var deliveryID string
-	var deliverNowID string
-	if terminal {
-		deliveryID = newID("msg", now)
-		handoffPath := filepath.Join(a.Paths.HandoffsDir, deliveryID+".md")
-		if message == "" {
-			message = "(Luna produced no final assistant message.)"
+	if found && a.isTerminalGoalStatus(goalEvent.Status) {
+		finalMessage := message
+		if finalMessage == "" {
+			finalMessage = "(Luna produced no final assistant message.)"
 		}
-		if err := writePrivate(handoffPath, []byte(message)); err != nil {
-			return fmt.Errorf("write handoff: %w", err)
+		observedAt := goalEvent.Timestamp
+		if observedAt.IsZero() {
+			observedAt = now
 		}
-		if err := a.Store.Update(func(st *state.State) error {
-			current := st.Tasks[task.ID]
-			if current == nil || current.Status != state.TaskRunning {
-				deliveryID = ""
-				return nil
-			}
-			current.Status = state.TaskFinished
-			current.TerminalGoalStatus = goalEvent.Status
+		_, err := a.finishTask(task.ID, finalMessage, goalEvent.Status, false, func(st *state.State, current *state.Task) error {
 			current.CodexSessionID = input.SessionID
 			current.TranscriptPath = transcriptPath
-			if message != "" {
+			if messageCached {
 				current.LastAssistantPath = cachePath
 			}
-			current.DeliveryID = deliveryID
-			current.UpdatedAt = now
-			current.FinishedAt = now
-			st.Deliveries[deliveryID] = &state.Delivery{
-				ID: deliveryID, TaskID: current.ID, WorkerSession: current.WorkerSession, WorkerAlias: current.WorkerAlias,
-				Workspace: current.Workspace, GoalStatus: goalEvent.Status,
-				MessagePath: handoffPath, Status: state.DeliveryPending, CreatedAt: now,
-			}
-			worker := st.Workers[role.Session]
-			if worker == nil {
-				worker = &state.Worker{Session: role.Session}
-				st.Workers[role.Session] = worker
-			}
-			worker.Pane = role.Pane
-			worker.CodexSessionID = input.SessionID
-			worker.CWD = input.CWD
-			worker.Busy = false
-			worker.UpdatedAt = now
-			if !st.Sol.Busy && st.Sol.ReservedDelivery == "" {
-				if reserved := reserveOldestDelivery(st, now); reserved != nil {
-					deliverNowID = reserved.ID
-				}
-			}
+			current.ObservedGoalStatus = goalEvent.Status
+			current.GoalObservedAt = observedAt
+			current.PendingGoalStatus = ""
+			current.PendingGoalTurnID = ""
+			current.PendingGoalAt = time.Time{}
+			current.LastStopTurnID = input.TurnID
+			current.LastStopAt = now
 			return nil
-		}); err != nil {
-			return err
-		}
-		if deliveryID == "" {
-			_ = os.Remove(handoffPath)
-		}
-		if deliverNowID != "" {
-			if err := a.Deliver(deliverNowID, time.Duration(a.Config.DeliveryDelayMS)*time.Millisecond); err != nil {
-				return err
-			}
-		}
-		return nil
+		})
+		return err
 	}
 
-	return a.Store.Update(func(st *state.State) error {
+	reconcileCandidate := newID("rec", now)
+	reconcileToken := ""
+	if err := a.Store.Update(func(st *state.State) error {
 		current := st.Tasks[task.ID]
 		if current != nil && current.Status == state.TaskRunning {
 			current.CodexSessionID = input.SessionID
 			current.TranscriptPath = transcriptPath
-			if message != "" {
+			if messageCached {
 				current.LastAssistantPath = cachePath
 			}
+			current.LastStopTurnID = input.TurnID
+			current.LastStopAt = now
 			if pendingTurnMismatch {
 				current.PendingGoalStatus = ""
 				current.PendingGoalTurnID = ""
 				current.PendingGoalAt = time.Time{}
+			}
+			if found {
+				observedAt := goalEvent.Timestamp
+				if observedAt.IsZero() {
+					observedAt = now
+				}
+				current.ObservedGoalStatus = goalEvent.Status
+				current.GoalObservedAt = observedAt
+				current.ReconcileToken = ""
+				current.LastError = ""
+			} else if !pendingTurnMismatch && current.ObservedGoalStatus == "" && messageCached && strings.TrimSpace(message) != "" {
+				// The goal may have been submitted as a normal prompt. Schedule one
+				// local re-check; a subsequent worker turn or any observed goal
+				// invalidates this token before it can infer completion.
+				current.ReconcileToken = reconcileCandidate
+				current.LastError = ""
+				reconcileToken = reconcileCandidate
+			} else {
+				current.ReconcileToken = ""
 			}
 			current.UpdatedAt = now
 		}
@@ -465,7 +453,15 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 		worker.Busy = false
 		worker.UpdatedAt = now
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	if reconcileToken != "" {
+		delay := time.Duration(a.Config.GoalReconcileDelayMS) * time.Millisecond
+		return a.ReconcileTask(task.ID, reconcileToken, delay)
+	}
+	return nil
 }
 
 func (a *App) isTerminalGoalStatus(status string) bool {

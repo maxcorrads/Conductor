@@ -50,7 +50,9 @@ Every action starts from an event:
 - Codex invokes a lifecycle hook.
 - The human explicitly invokes a recovery command.
 
-After a Sol `Stop`, Conductor may start a detached one-shot `_deliver` helper. The helper sleeps for the configured short delay, verifies that Sol is still idle, sends one message, and exits. It is not a daemon and never loops.
+After a Sol `Stop`, Conductor may start a detached one-shot `_deliver` helper. The helper sleeps for the configured short delay, verifies that Sol is still idle, sends one message, and exits.
+
+An ambiguous Luna `Stop` waits once inside the hook process, then checks local transcript/database and Conductor state exactly once. Any observed goal invalidates its token. There is no reconciliation daemon or loop.
 
 ## Project routing
 
@@ -87,7 +89,8 @@ One `running` task is allowed per Luna session. A task stores:
 - full original goal file;
 - compact objective actually passed to `/goal`;
 - Codex session/transcript identifiers when available;
-- pending and final goal status;
+- pending, observed, and final goal status;
+- a short-lived reconciliation token when a goal-less Stop needs one local recheck;
 - path to the final handoff.
 
 ### Delivery
@@ -116,14 +119,16 @@ project cannot reserve, delay, or wake another project's Sol.
 5. The following `Stop` provides `last_assistant_message`.
 6. Conductor writes those exact bytes to a private handoff file and finishes the task.
 
-### Compatibility path
+### Compatibility and implicit path
 
-If the terminal `PostToolUse` signal was unavailable, Conductor tries:
+If the terminal `PostToolUse` signal was unavailable, Conductor first tries:
 
 1. the tail of the session transcript;
 2. the local Codex goal database through the `sqlite3` command, when available.
 
 Both fallbacks require conservative session/objective matching. They are secondary because Codex explicitly describes transcript JSON as unstable.
+
+If a worker `Stop` has a final assistant message, no real goal has ever been observed, and neither local source contains a matching goal, Conductor stores a unique reconciliation token and performs one delayed in-hook recheck. It forwards the cached message as status `implicit` only when the worker is still idle, the token is unchanged, and no goal appeared. Any new worker prompt, any `update_goal`, an unavailable goal source, or unreadable local state cancels the inference.
 
 ### Manual path
 
@@ -155,14 +160,16 @@ For normal handoffs, Conductor:
 3. uses `paste-buffer` in bracketed-paste mode when supported;
 4. sends one Enter key.
 
-For delegation, Conductor first types the literal `/goal ` prefix with `send-keys -l`, then pastes only the objective and sends Enter. Keeping the slash-command prefix outside a large paste ensures Codex recognizes the command while preserving multiline objective text.
+For delegation, Conductor clears the composer, types `/goal clear`, waits briefly for Codex to persist the clear, then types the literal `/goal ` prefix with `send-keys -l`. After a second short pause it pastes only the objective and sends Enter. Keeping the slash-command prefix outside a large paste ensures Codex recognizes the command while preserving multiline objective text.
+
+A bounded local `capture-pane` probe looks for all exact **Replace goal?** markers. If clearing and setting race, it confirms the already-selected **Replace current goal** action. The probe has a deadline, sends no prompt to a model, and stops immediately after confirmation.
 
 This avoids shell interpretation and does not summarize or rewrite the objective.
 
 ## Token-efficiency choices
 
 - Conductor itself runs no model.
-- There is no polling prompt from Sol.
+- There is no polling prompt from Sol and no recurring worker-status loop.
 - Goal command output is only `delegated luna-N`.
 - Project prefixes are used only for local tmux routing and never appended to
   Sol-authored goals or Luna handoffs.

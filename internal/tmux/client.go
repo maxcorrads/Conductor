@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type Pane struct {
@@ -30,10 +31,37 @@ type Client interface {
 }
 
 type ExecClient struct {
-	Bin string
+	Bin          string
+	goalDispatch GoalDispatchOptions
+	sleep        func(time.Duration)
 }
 
-func New(bin string) *ExecClient { return &ExecClient{Bin: bin} }
+type GoalDispatchOptions struct {
+	ClearDelay           time.Duration
+	PrefixDelay          time.Duration
+	ReplaceProbeTimeout  time.Duration
+	ReplaceProbeInterval time.Duration
+}
+
+func DefaultGoalDispatchOptions() GoalDispatchOptions {
+	return GoalDispatchOptions{
+		ClearDelay:           250 * time.Millisecond,
+		PrefixDelay:          75 * time.Millisecond,
+		ReplaceProbeTimeout:  1200 * time.Millisecond,
+		ReplaceProbeInterval: 75 * time.Millisecond,
+	}
+}
+
+func New(bin string) *ExecClient {
+	return NewWithGoalDispatchOptions(bin, DefaultGoalDispatchOptions())
+}
+
+func NewWithGoalDispatchOptions(bin string, options GoalDispatchOptions) *ExecClient {
+	if options.ReplaceProbeInterval <= 0 {
+		options.ReplaceProbeInterval = 75 * time.Millisecond
+	}
+	return &ExecClient{Bin: bin, goalDispatch: options, sleep: time.Sleep}
+}
 
 func (c *ExecClient) Version() (string, error) {
 	out, err := exec.Command(c.Bin, "-V").CombinedOutput()
@@ -122,26 +150,118 @@ func (c *ExecClient) SendPrompt(targetPane string, prompt string) error {
 	return c.pasteAndSubmit(targetPane, prompt)
 }
 
-// SendGoal writes the slash-command prefix as literal key events, then pastes
-// only the objective. Codex's TUI may collapse a large single paste into a
-// placeholder before slash-command dispatch; keeping "/goal " outside the
-// pasted block makes the command recognizable while preserving the objective
-// verbatim, including newlines.
+// SendGoal clears any persisted goal left by the previous task, writes the
+// slash-command prefix as literal key events, and then pastes only the
+// objective. Codex's TUI may collapse a large single paste into a placeholder
+// before slash-command dispatch; keeping "/goal " outside the pasted block
+// makes the command recognizable while preserving the objective verbatim,
+// including newlines.
+//
+// A bounded, local capture-pane probe confirms Codex's "Replace goal?" dialog
+// when the clear and set operations race. It never talks to a model and stops
+// as soon as the dialog is handled or the timeout expires.
 func (c *ExecClient) SendGoal(targetPane string, objective string) error {
 	if strings.TrimSpace(objective) == "" {
 		return errors.New("refusing to send an empty goal")
 	}
-	out, err := exec.Command(c.Bin, "send-keys", "-t", targetPane, "-l", "/goal ").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("tmux send /goal prefix: %w: %s", err, strings.TrimSpace(string(out)))
+
+	// Recover a pane left at the replacement prompt by an earlier failed
+	// dispatch before attempting another slash command.
+	if visible, err := c.captureVisiblePane(targetPane); err == nil && isReplaceGoalPrompt(visible) {
+		if err := c.sendKey(targetPane, "Escape"); err != nil {
+			return err
+		}
+		c.pause(25 * time.Millisecond)
 	}
+
+	// Start from an empty composer, clear the persisted goal, and give Codex's
+	// app-server a short window to commit the clear before setting the new goal.
+	if err := c.sendKey(targetPane, "C-u"); err != nil {
+		return err
+	}
+	if err := c.sendLiteral(targetPane, "/goal clear"); err != nil {
+		return fmt.Errorf("tmux send /goal clear: %w", err)
+	}
+	if err := c.sendKey(targetPane, "Enter"); err != nil {
+		return err
+	}
+	c.pause(c.goalDispatch.ClearDelay)
+
+	if err := c.sendKey(targetPane, "C-u"); err != nil {
+		return err
+	}
+	if err := c.sendLiteral(targetPane, "/goal "); err != nil {
+		return fmt.Errorf("tmux send /goal prefix: %w", err)
+	}
+	c.pause(c.goalDispatch.PrefixDelay)
 	if err := c.pasteAndSubmit(targetPane, objective); err != nil {
 		// Best-effort cleanup so a partial /goal command is not left in the
 		// composer after a transport failure.
 		_ = exec.Command(c.Bin, "send-keys", "-t", targetPane, "C-u").Run()
 		return err
 	}
+	return c.confirmReplaceGoalPrompt(targetPane)
+}
+
+func (c *ExecClient) sendLiteral(targetPane, text string) error {
+	out, err := exec.Command(c.Bin, "send-keys", "-t", targetPane, "-l", text).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux send literal keys: %w: %s", err, strings.TrimSpace(string(out)))
+	}
 	return nil
+}
+
+func (c *ExecClient) sendKey(targetPane, key string) error {
+	out, err := exec.Command(c.Bin, "send-keys", "-t", targetPane, key).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux send %s: %w: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (c *ExecClient) pause(delay time.Duration) {
+	if delay > 0 && c.sleep != nil {
+		c.sleep(delay)
+	}
+}
+
+func (c *ExecClient) captureVisiblePane(targetPane string) (string, error) {
+	out, err := exec.Command(c.Bin, "capture-pane", "-p", "-J", "-t", targetPane).CombinedOutput()
+	if err == nil {
+		return string(out), nil
+	}
+	// -J is available on supported tmux versions, but retry without it so the
+	// recovery path remains harmless on older installations.
+	fallback, fallbackErr := exec.Command(c.Bin, "capture-pane", "-p", "-t", targetPane).CombinedOutput()
+	if fallbackErr != nil {
+		return "", fmt.Errorf("tmux capture pane: %w: %s", fallbackErr, strings.TrimSpace(string(fallback)))
+	}
+	return string(fallback), nil
+}
+
+func isReplaceGoalPrompt(pane string) bool {
+	return strings.Contains(pane, "Replace goal?") &&
+		strings.Contains(pane, "Replace current goal") &&
+		strings.Contains(pane, "Set the new objective and start it now") &&
+		strings.Contains(pane, "Keep the current goal")
+}
+
+func (c *ExecClient) confirmReplaceGoalPrompt(targetPane string) error {
+	timeout := c.goalDispatch.ReplaceProbeTimeout
+	if timeout <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		visible, err := c.captureVisiblePane(targetPane)
+		if err == nil && isReplaceGoalPrompt(visible) {
+			return c.sendKey(targetPane, "Enter")
+		}
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		c.pause(c.goalDispatch.ReplaceProbeInterval)
+	}
 }
 
 func (c *ExecClient) pasteAndSubmit(targetPane string, text string) error {

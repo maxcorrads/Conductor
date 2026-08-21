@@ -53,7 +53,11 @@ func NewForProject(requestedProject string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmuxClient := tmux.New(cfg.TmuxCommand)
+	tmuxClient := tmux.NewWithGoalDispatchOptions(cfg.TmuxCommand, tmux.GoalDispatchOptions{
+		ClearDelay:          time.Duration(cfg.GoalClearDelayMS) * time.Millisecond,
+		PrefixDelay:         time.Duration(cfg.GoalPrefixDelayMS) * time.Millisecond,
+		ReplaceProbeTimeout: time.Duration(cfg.GoalReplaceProbeMS) * time.Millisecond,
+	})
 	projectID := strings.TrimSpace(requestedProject)
 	if projectID == "" {
 		if session, _, currentErr := tmuxClient.CurrentSession(); currentErr == nil {

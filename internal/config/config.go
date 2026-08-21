@@ -16,6 +16,10 @@ type Config struct {
 	WorkerSessionPattern string   `json:"worker_session_pattern"`
 	TmuxCommand          string   `json:"tmux_command"`
 	DeliveryDelayMS      int      `json:"delivery_delay_ms"`
+	GoalClearDelayMS     int      `json:"goal_clear_delay_ms"`
+	GoalPrefixDelayMS    int      `json:"goal_prefix_delay_ms"`
+	GoalReplaceProbeMS   int      `json:"goal_replace_probe_ms"`
+	GoalReconcileDelayMS int      `json:"goal_reconcile_delay_ms"`
 	InlineGoalMaxChars   int      `json:"inline_goal_max_chars"`
 	TerminalGoalStatuses []string `json:"terminal_goal_statuses"`
 	TranscriptTailBytes  int64    `json:"transcript_tail_bytes"`
@@ -42,6 +46,16 @@ func Default() Config {
 		WorkerSessionPattern: `^luna-[1-9][0-9]*$`,
 		TmuxCommand:          "tmux",
 		DeliveryDelayMS:      180,
+		// Clear the prior persisted goal before assigning the next one. A bounded
+		// post-submit probe still confirms Codex's replacement dialog if the clear
+		// and set operations race on a slower machine.
+		GoalClearDelayMS:   250,
+		GoalPrefixDelayMS:  75,
+		GoalReplaceProbeMS: 1_200,
+		// A normal worker Stop with no observable goal schedules one local,
+		// delayed reconciliation. It is cancelled by any subsequent worker turn
+		// and never polls a model.
+		GoalReconcileDelayMS: 1_500,
 		// Codex currently caps persisted /goal objectives at 4,000 characters.
 		// Leave room for the /goal prefix and future CLI-side bookkeeping; longer
 		// objectives are stored in a private file and referenced by absolute path.
@@ -167,6 +181,18 @@ func (c Config) Validate() error {
 	}
 	if c.DeliveryDelayMS < 0 || c.DeliveryDelayMS > 10_000 {
 		return errors.New("delivery_delay_ms must be between 0 and 10000")
+	}
+	if c.GoalClearDelayMS < 0 || c.GoalClearDelayMS > 10_000 {
+		return errors.New("goal_clear_delay_ms must be between 0 and 10000")
+	}
+	if c.GoalPrefixDelayMS < 0 || c.GoalPrefixDelayMS > 10_000 {
+		return errors.New("goal_prefix_delay_ms must be between 0 and 10000")
+	}
+	if c.GoalReplaceProbeMS < 0 || c.GoalReplaceProbeMS > 10_000 {
+		return errors.New("goal_replace_probe_ms must be between 0 and 10000")
+	}
+	if c.GoalReconcileDelayMS < 0 || c.GoalReconcileDelayMS > 60_000 {
+		return errors.New("goal_reconcile_delay_ms must be between 0 and 60000")
 	}
 	if c.InlineGoalMaxChars < 256 || c.InlineGoalMaxChars > 3_900 {
 		return errors.New("inline_goal_max_chars must be between 256 and 3900")

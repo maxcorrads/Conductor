@@ -154,7 +154,7 @@ func (a *App) requeueDelivery(deliveryID, reason string) error {
 }
 
 func (a *App) FinishWorker(worker, explicitMessage, goalStatus string) (string, error) {
-	workerSession, workerAlias, err := a.ResolveWorkerSession(worker)
+	workerSession, _, err := a.ResolveWorkerSession(worker)
 	if err != nil {
 		return "", err
 	}
@@ -169,46 +169,75 @@ func (a *App) FinishWorker(worker, explicitMessage, goalStatus string) (string, 
 	if task == nil {
 		return "", fmt.Errorf("%s has no active task", workerSession)
 	}
-	if task.WorkerAlias != "" {
-		workerAlias = task.WorkerAlias
+	if goalStatus == "" {
+		goalStatus = "manual"
 	}
+	return a.finishTask(task.ID, explicitMessage, goalStatus, true, nil)
+}
+
+var errTaskNotRunning = errors.New("task is no longer running")
+
+type finishTaskMutation func(st *state.State, task *state.Task) error
+
+// finishTask turns a running task into a queued handoff. Callers may provide a
+// mutation that is evaluated under the state lock; reconciliation uses it to
+// prove that the worker stayed idle and that no real goal appeared meanwhile.
+func (a *App) finishTask(taskID, explicitMessage, goalStatus string, useCachedMessage bool, mutate finishTaskMutation) (string, error) {
+	st, err := a.Store.Read()
+	if err != nil {
+		return "", err
+	}
+	task := st.Tasks[taskID]
+	if task == nil || task.Status != state.TaskRunning {
+		return "", errTaskNotRunning
+	}
+
 	message := explicitMessage
-	if message == "" && task.LastAssistantPath != "" {
-		if data, err := os.ReadFile(task.LastAssistantPath); err == nil {
+	if message == "" && useCachedMessage && task.LastAssistantPath != "" {
+		if data, readErr := os.ReadFile(task.LastAssistantPath); readErr == nil {
 			message = string(data)
 		}
 	}
 	if strings.TrimSpace(message) == "" {
 		return "", errors.New("no cached assistant message; pass --stdin or --file")
 	}
-	if goalStatus == "" {
+	if strings.TrimSpace(goalStatus) == "" {
 		goalStatus = "manual"
 	}
+
 	now := a.Now().UTC()
 	deliveryID := newID("msg", now)
 	handoffPath := a.Paths.HandoffsDir + string(os.PathSeparator) + deliveryID + ".md"
 	if err := writePrivate(handoffPath, []byte(message)); err != nil {
 		return "", err
 	}
+
 	deliverNowID := ""
 	if err := a.Store.Update(func(st *state.State) error {
-		current := st.Tasks[task.ID]
+		current := st.Tasks[taskID]
 		if current == nil || current.Status != state.TaskRunning {
-			return errors.New("task is no longer running")
+			return errTaskNotRunning
+		}
+		if mutate != nil {
+			if err := mutate(st, current); err != nil {
+				return err
+			}
 		}
 		current.Status = state.TaskFinished
 		current.TerminalGoalStatus = goalStatus
+		current.LastError = ""
+		current.ReconcileToken = ""
 		current.DeliveryID = deliveryID
 		current.FinishedAt = now
 		current.UpdatedAt = now
 		st.Deliveries[deliveryID] = &state.Delivery{
-			ID: deliveryID, TaskID: current.ID, WorkerSession: workerSession, WorkerAlias: workerAlias,
+			ID: deliveryID, TaskID: current.ID, WorkerSession: current.WorkerSession, WorkerAlias: current.WorkerAlias,
 			Workspace: current.Workspace, GoalStatus: goalStatus,
 			MessagePath: handoffPath, Status: state.DeliveryPending, CreatedAt: now,
 		}
-		if w := st.Workers[workerSession]; w != nil {
-			w.Busy = false
-			w.UpdatedAt = now
+		if workerState := st.Workers[current.WorkerSession]; workerState != nil {
+			workerState.Busy = false
+			workerState.UpdatedAt = now
 		}
 		if !st.Sol.Busy && st.Sol.ReservedDelivery == "" {
 			if reserved := reserveOldestDelivery(st, now); reserved != nil {
@@ -217,6 +246,7 @@ func (a *App) FinishWorker(worker, explicitMessage, goalStatus string) (string, 
 		}
 		return nil
 	}); err != nil {
+		_ = os.Remove(handoffPath)
 		return "", err
 	}
 	if deliverNowID != "" {

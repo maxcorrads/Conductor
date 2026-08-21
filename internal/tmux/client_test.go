@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExecClientSendsPromptThroughBuffer(t *testing.T) {
@@ -46,12 +47,13 @@ esac
 	}
 }
 
-func TestExecClientSendsGoalPrefixSeparatelyFromPastedObjective(t *testing.T) {
+func TestExecClientClearsGoalAndSendsPrefixSeparatelyFromPastedObjective(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "tmux")
 	body := `#!/bin/sh
 set -eu
 case "$1" in
+  capture-pane) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   load-buffer) cat > "$FAKE_TMUX_DIR/payload"; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   send-keys) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
@@ -62,7 +64,7 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("FAKE_TMUX_DIR", dir)
-	client := New(script)
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{})
 	objective := "line one\nline two\n" + strings.Repeat("x", 1_200)
 	if err := client.SendGoal("%1", objective); err != nil {
 		t.Fatal(err)
@@ -79,17 +81,110 @@ esac
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
-	if len(lines) < 4 {
+	want := []string{
+		"capture-pane -p -J -t %1",
+		"send-keys -t %1 C-u",
+		"send-keys -t %1 -l /goal clear",
+		"send-keys -t %1 Enter",
+		"send-keys -t %1 C-u",
+		"send-keys -t %1 -l /goal ",
+	}
+	if len(lines) < len(want)+3 {
 		t.Fatalf("unexpected tmux calls: %s", calls)
 	}
-	if lines[0] != "send-keys -t %1 -l /goal " {
-		t.Fatalf("goal prefix was not sent separately: %q", lines[0])
+	for i, expected := range want {
+		if lines[i] != expected {
+			t.Fatalf("call %d\nwant: %q\n got: %q\nall: %s", i, expected, lines[i], calls)
+		}
 	}
-	if !strings.HasPrefix(lines[1], "load-buffer ") || !strings.HasPrefix(lines[2], "paste-buffer ") {
+	if !strings.HasPrefix(lines[6], "load-buffer ") || !strings.HasPrefix(lines[7], "paste-buffer ") {
 		t.Fatalf("objective was not pasted after prefix: %s", calls)
 	}
-	if lines[3] != "send-keys -t %1 Enter" {
-		t.Fatalf("Enter not sent last: %q", lines[3])
+	if lines[8] != "send-keys -t %1 Enter" {
+		t.Fatalf("Enter not sent last: %q", lines[8])
+	}
+}
+
+func TestExecClientConfirmsReplaceGoalPromptAfterSubmit(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tmux")
+	body := `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane)
+    count=0
+    if [ -f "$FAKE_TMUX_DIR/capture-count" ]; then count=$(cat "$FAKE_TMUX_DIR/capture-count"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$FAKE_TMUX_DIR/capture-count"
+    printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls"
+    if [ "$count" -ge 2 ]; then
+      printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n'
+    fi
+    ;;
+  load-buffer) cat >/dev/null; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  send-keys) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_DIR", dir)
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
+		ReplaceProbeTimeout:  50 * time.Millisecond,
+		ReplaceProbeInterval: time.Millisecond,
+	})
+	if err := client.SendGoal("%1", "new objective"); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(calls), "send-keys -t %1 Enter\n"); got != 3 {
+		t.Fatalf("expected clear submit, goal submit, and replacement confirmation; got %d\n%s", got, calls)
+	}
+}
+
+func TestExecClientDismissesStaleReplacePromptBeforeDispatch(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tmux")
+	body := `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane) printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n'; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  load-buffer) cat >/dev/null; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  send-keys) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_DIR", dir)
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{})
+	client.sleep = func(time.Duration) {}
+	if err := client.SendGoal("%1", "new objective"); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+	if len(lines) < 2 || lines[1] != "send-keys -t %1 Escape" {
+		t.Fatalf("stale replacement prompt was not dismissed first: %s", calls)
+	}
+}
+
+func TestReplaceGoalPromptDetectionRequiresExactMarkers(t *testing.T) {
+	if !isReplaceGoalPrompt("Replace goal?\nReplace current goal\nSet the new objective and start it now\nKeep the current goal") {
+		t.Fatal("expected exact replacement prompt to be recognized")
+	}
+	if isReplaceGoalPrompt("A log line mentioning Replace goal? only") {
+		t.Fatal("partial text must not trigger automatic Enter")
 	}
 }
 
