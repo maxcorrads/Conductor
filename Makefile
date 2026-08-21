@@ -5,7 +5,7 @@ BINARY := conductor
 PKG := ./cmd/conductor
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all fmt fmt-check test vet race build dist checksums package release clean
+.PHONY: all fmt fmt-check test vet race build dist checksums package verify-package release clean
 
 all: build
 
@@ -39,7 +39,24 @@ checksums: dist
 package: checksums
 	VERSION=$(VERSION) ./scripts/package.sh
 
-release: fmt-check test vet race package
+verify-package: package
+	cd dist && shasum -a 256 -c CHECKSUMS.txt
+	cd release && shasum -a 256 -c conductor-v$(VERSION).zip.sha256
+	@set -eu; \
+	archive="release/conductor-v$(VERSION).zip"; \
+	prefix="conductor-v$(VERSION)"; \
+	for path in \
+		"$$prefix/scripts/install.sh" \
+		"$$prefix/dist/conductor-darwin-arm64" \
+		"$$prefix/dist/conductor-darwin-amd64" \
+		"$$prefix/dist/CHECKSUMS.txt"; do \
+		unzip -Z1 "$$archive" | grep -Fqx "$$path" || { \
+			echo "Missing $$path from $$archive" >&2; \
+			exit 1; \
+		}; \
+	done
+
+release: fmt-check test vet race verify-package
 
 clean:
 	rm -rf build dist release
