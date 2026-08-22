@@ -37,16 +37,31 @@ type ExecClient struct {
 }
 
 type GoalDispatchOptions struct {
-	PrefixDelay          time.Duration
-	ReplaceProbeTimeout  time.Duration
-	ReplaceProbeInterval time.Duration
+	PrefixDelay           time.Duration
+	DispatchTimeout       time.Duration
+	DispatchProbeInterval time.Duration
+}
+
+// GoalDispatchUncertainError means Conductor submitted input to the pane but
+// could not prove the resulting Codex state. Callers must retain an active task
+// and block retries until a later hook or explicit user action resolves it.
+type GoalDispatchUncertainError struct {
+	Err error
+}
+
+func (e *GoalDispatchUncertainError) Error() string { return e.Err.Error() }
+func (e *GoalDispatchUncertainError) Unwrap() error { return e.Err }
+
+func IsGoalDispatchUncertain(err error) bool {
+	var uncertain *GoalDispatchUncertainError
+	return errors.As(err, &uncertain)
 }
 
 func DefaultGoalDispatchOptions() GoalDispatchOptions {
 	return GoalDispatchOptions{
-		PrefixDelay:          75 * time.Millisecond,
-		ReplaceProbeTimeout:  1200 * time.Millisecond,
-		ReplaceProbeInterval: 75 * time.Millisecond,
+		PrefixDelay:           75 * time.Millisecond,
+		DispatchTimeout:       10 * time.Second,
+		DispatchProbeInterval: 75 * time.Millisecond,
 	}
 }
 
@@ -55,8 +70,8 @@ func New(bin string) *ExecClient {
 }
 
 func NewWithGoalDispatchOptions(bin string, options GoalDispatchOptions) *ExecClient {
-	if options.ReplaceProbeInterval <= 0 {
-		options.ReplaceProbeInterval = 75 * time.Millisecond
+	if options.DispatchProbeInterval <= 0 {
+		options.DispatchProbeInterval = 75 * time.Millisecond
 	}
 	return &ExecClient{Bin: bin, goalDispatch: options, sleep: time.Sleep}
 }
@@ -155,25 +170,40 @@ func (c *ExecClient) SendPrompt(targetPane string, prompt string) error {
 // including newlines.
 //
 // A bounded, local capture-pane probe confirms Codex's "Replace goal?" dialog
-// when a previous persisted goal exists. It never talks to a model and stops
-// as soon as the dialog is handled or the timeout expires.
+// when a previous persisted goal exists. Dispatch succeeds only after the pane
+// shows an active turn or a confirmed replacement dialog disappears. It never
+// talks to a model and fails closed when the timeout expires.
 func (c *ExecClient) SendGoal(targetPane string, objective string) error {
 	if strings.TrimSpace(objective) == "" {
 		return errors.New("refusing to send an empty goal")
 	}
 
+	// Refuse to type into an active turn. Besides protecting unrelated work,
+	// this makes a later Working marker an acknowledgement of this dispatch
+	// rather than stale evidence from a preceding turn.
+	visible, err := c.captureVisiblePane(targetPane)
+	if err != nil {
+		return fmt.Errorf("inspect Worker pane before goal dispatch: %w", err)
+	}
 	// Recover a pane left at the replacement prompt by an earlier failed
 	// dispatch before attempting another slash command.
-	if visible, err := c.captureVisiblePane(targetPane); err == nil && isReplaceGoalPrompt(visible) {
+	if PaneShowsReplaceGoalPrompt(visible) && PaneShowsActiveTurn(visible) {
+		return errors.New("refusing to dispatch a goal while the Worker pane has ambiguous Working and Replace goal states")
+	}
+	if PaneShowsReplaceGoalPrompt(visible) {
 		if err := c.sendKey(targetPane, "Escape"); err != nil {
 			return err
 		}
-		c.pause(25 * time.Millisecond)
+		if err := c.waitForReplaceGoalPromptDismissal(targetPane); err != nil {
+			return err
+		}
+	} else if PaneShowsActiveTurn(visible) {
+		return errors.New("refusing to dispatch a goal while the Worker has an active Codex turn")
 	}
 
-	// Start from an empty composer. A previous persisted goal is replaced through
-	// Codex's native confirmation dialog; `/goal clear` is not a supported clear
-	// command and would become part of the objective text.
+	// Start from an empty composer. Preserve Codex's persisted-goal lifecycle:
+	// replacement is confirmed through its native dialog instead of clearing the
+	// existing goal implicitly before the new assignment is acknowledged.
 	if err := c.sendKey(targetPane, "C-u"); err != nil {
 		return err
 	}
@@ -185,9 +215,12 @@ func (c *ExecClient) SendGoal(targetPane string, objective string) error {
 		// Best-effort cleanup so a partial /goal command is not left in the
 		// composer after a transport failure.
 		_ = exec.Command(c.Bin, "send-keys", "-t", targetPane, "C-u").Run()
-		return err
+		return &GoalDispatchUncertainError{Err: err}
 	}
-	return c.confirmReplaceGoalPrompt(targetPane)
+	if err := c.confirmGoalDispatch(targetPane); err != nil {
+		return &GoalDispatchUncertainError{Err: err}
+	}
+	return nil
 }
 
 func (c *ExecClient) sendLiteral(targetPane, text string) error {
@@ -226,28 +259,118 @@ func (c *ExecClient) captureVisiblePane(targetPane string) (string, error) {
 	return string(fallback), nil
 }
 
-func isReplaceGoalPrompt(pane string) bool {
+func PaneShowsReplaceGoalPrompt(pane string) bool {
 	return strings.Contains(pane, "Replace goal?") &&
 		strings.Contains(pane, "Replace current goal") &&
 		strings.Contains(pane, "Set the new objective and start it now") &&
 		strings.Contains(pane, "Keep the current goal")
 }
 
-func (c *ExecClient) confirmReplaceGoalPrompt(targetPane string) error {
-	timeout := c.goalDispatch.ReplaceProbeTimeout
+func (c *ExecClient) waitForReplaceGoalPromptDismissal(targetPane string) error {
+	timeout := c.goalDispatch.DispatchTimeout
 	if timeout <= 0 {
-		return nil
+		return errors.New("goal dispatch confirmation is disabled")
 	}
 	deadline := time.Now().Add(timeout)
 	for {
 		visible, err := c.captureVisiblePane(targetPane)
-		if err == nil && isReplaceGoalPrompt(visible) {
-			return c.sendKey(targetPane, "Enter")
+		if err != nil {
+			return fmt.Errorf("confirm stale Replace goal dialog was dismissed: %w", err)
 		}
-		if !time.Now().Before(deadline) {
+		replaceVisible := PaneShowsReplaceGoalPrompt(visible)
+		active := PaneShowsActiveTurn(visible)
+		if replaceVisible && active {
+			return errors.New("Worker pane has ambiguous Working and Replace goal states after dismissing the stale dialog")
+		}
+		if !replaceVisible {
+			if active {
+				return errors.New("Worker started an active Codex turn while dismissing the stale Replace goal dialog")
+			}
 			return nil
 		}
-		c.pause(c.goalDispatch.ReplaceProbeInterval)
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("stale Replace goal dialog did not close within %s; no new goal was typed", timeout)
+		}
+		c.pause(c.goalDispatch.DispatchProbeInterval)
+	}
+}
+
+func PaneShowsActiveTurn(content string) bool {
+	busy := false
+	for _, line := range strings.Split(strings.ToLower(content), "\n") {
+		line = codexStatusLine(line)
+		working := strings.HasPrefix(line, "working")
+		if working && (strings.Contains(line, "esc to interrupt") || strings.Contains(line, "esc to cancel")) {
+			busy = true
+			continue
+		}
+		if strings.HasPrefix(line, "worked for") ||
+			strings.HasPrefix(line, "goal paused") ||
+			strings.HasPrefix(line, "goal stalled") ||
+			strings.HasPrefix(line, "conversation interrupted") {
+			busy = false
+		}
+	}
+	return busy
+}
+
+func codexStatusLine(line string) string {
+	line = strings.TrimSpace(line)
+	for _, prefix := range []string{"•", "—", "■", "▪", "●"} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return line
+}
+
+func (c *ExecClient) confirmGoalDispatch(targetPane string) error {
+	timeout := c.goalDispatch.DispatchTimeout
+	if timeout <= 0 {
+		return errors.New("goal dispatch confirmation is disabled")
+	}
+	deadline := time.Now().Add(timeout)
+	replacementConfirmed := false
+	var lastCaptureErr error
+	for {
+		visible, err := c.captureVisiblePane(targetPane)
+		if err != nil {
+			lastCaptureErr = err
+		} else {
+			lastCaptureErr = nil
+			replaceVisible := PaneShowsReplaceGoalPrompt(visible)
+			active := PaneShowsActiveTurn(visible)
+			if replaceVisible && active {
+				return errors.New("goal dispatch acknowledgement is ambiguous: Worker pane shows both Working and Replace goal")
+			}
+			if active {
+				return nil
+			}
+			if replaceVisible {
+				if !replacementConfirmed {
+					if err := c.sendKey(targetPane, "Enter"); err != nil {
+						return err
+					}
+					replacementConfirmed = true
+					// Always allow a post-Enter observation, even when the dialog
+					// appeared at the edge of the original dispatch deadline.
+					confirmationGrace := timeout
+					if confirmationGrace > 2*time.Second {
+						confirmationGrace = 2 * time.Second
+					}
+					deadline = time.Now().Add(confirmationGrace)
+				}
+			} else if replacementConfirmed {
+				return nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			if lastCaptureErr != nil {
+				return fmt.Errorf("goal dispatch was not confirmed within %s: %w", timeout, lastCaptureErr)
+			}
+			return fmt.Errorf("goal dispatch was not confirmed within %s; inspect the Worker terminal before retrying", timeout)
+		}
+		c.pause(c.goalDispatch.DispatchProbeInterval)
 	}
 }
 

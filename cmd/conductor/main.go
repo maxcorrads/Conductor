@@ -22,7 +22,7 @@ import (
 	"github.com/maxcorrads/conductor/internal/tmux"
 )
 
-var version = "0.4.0"
+var version = "0.4.1"
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "hook" {

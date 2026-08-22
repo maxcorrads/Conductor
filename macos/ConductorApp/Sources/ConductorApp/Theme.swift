@@ -7,9 +7,10 @@ enum ConductorTheme {
     static let failure = Color(red: 207 / 255, green: 74 / 255, blue: 85 / 255)
     static let muted = Color.secondary.opacity(0.7)
 
-    static func statusColor(connected: Bool, busy: Bool, failed: Bool = false) -> Color {
+    static func statusColor(connected: Bool, busy: Bool, attention: Bool = false, failed: Bool = false) -> Color {
         if failed { return failure }
         if !connected { return Color.secondary.opacity(0.45) }
+        if attention { return waiting }
         return busy ? signal : complete
     }
 

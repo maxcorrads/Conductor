@@ -13,17 +13,17 @@ import (
 const CurrentVersion = 2
 
 type Config struct {
-	Version              int      `json:"version"`
-	BrainSession         string   `json:"brain_session"`
-	WorkerSessionPattern string   `json:"worker_session_pattern"`
-	TmuxCommand          string   `json:"tmux_command"`
-	DeliveryDelayMS      int      `json:"delivery_delay_ms"`
-	GoalPrefixDelayMS    int      `json:"goal_prefix_delay_ms"`
-	GoalReplaceProbeMS   int      `json:"goal_replace_probe_ms"`
-	GoalReconcileDelayMS int      `json:"goal_reconcile_delay_ms"`
-	InlineGoalMaxChars   int      `json:"inline_goal_max_chars"`
-	TerminalGoalStatuses []string `json:"terminal_goal_statuses"`
-	TranscriptTailBytes  int64    `json:"transcript_tail_bytes"`
+	Version               int      `json:"version"`
+	BrainSession          string   `json:"brain_session"`
+	WorkerSessionPattern  string   `json:"worker_session_pattern"`
+	TmuxCommand           string   `json:"tmux_command"`
+	DeliveryDelayMS       int      `json:"delivery_delay_ms"`
+	GoalPrefixDelayMS     int      `json:"goal_prefix_delay_ms"`
+	GoalDispatchTimeoutMS int      `json:"goal_dispatch_timeout_ms"`
+	GoalReconcileDelayMS  int      `json:"goal_reconcile_delay_ms"`
+	InlineGoalMaxChars    int      `json:"inline_goal_max_chars"`
+	TerminalGoalStatuses  []string `json:"terminal_goal_statuses"`
+	TranscriptTailBytes   int64    `json:"transcript_tail_bytes"`
 }
 
 type Paths struct {
@@ -42,13 +42,13 @@ type Paths struct {
 
 func Default() Config {
 	return Config{
-		Version:              CurrentVersion,
-		BrainSession:         "brain",
-		WorkerSessionPattern: `^worker-[1-9][0-9]*$`,
-		TmuxCommand:          "tmux",
-		DeliveryDelayMS:      180,
-		GoalPrefixDelayMS:    75,
-		GoalReplaceProbeMS:   1_200,
+		Version:               CurrentVersion,
+		BrainSession:          "brain",
+		WorkerSessionPattern:  `^worker-[1-9][0-9]*$`,
+		TmuxCommand:           "tmux",
+		DeliveryDelayMS:       180,
+		GoalPrefixDelayMS:     75,
+		GoalDispatchTimeoutMS: 10_000,
 		// A normal worker Stop with no observable goal schedules one local,
 		// delayed reconciliation. It is cancelled by any subsequent worker turn
 		// and never polls a model.
@@ -192,8 +192,8 @@ func (c Config) Validate() error {
 	if c.GoalPrefixDelayMS < 0 || c.GoalPrefixDelayMS > 10_000 {
 		return errors.New("goal_prefix_delay_ms must be between 0 and 10000")
 	}
-	if c.GoalReplaceProbeMS < 0 || c.GoalReplaceProbeMS > 10_000 {
-		return errors.New("goal_replace_probe_ms must be between 0 and 10000")
+	if c.GoalDispatchTimeoutMS < 1_000 || c.GoalDispatchTimeoutMS > 60_000 {
+		return errors.New("goal_dispatch_timeout_ms must be between 1000 and 60000")
 	}
 	if c.GoalReconcileDelayMS < 0 || c.GoalReconcileDelayMS > 60_000 {
 		return errors.New("goal_reconcile_delay_ms must be between 0 and 60000")

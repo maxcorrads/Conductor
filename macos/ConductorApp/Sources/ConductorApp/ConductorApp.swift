@@ -43,7 +43,8 @@ struct ConductorMacApp: App {
         let busy = model.snapshot?.projects.contains { project in
             project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:]) || project.workers(
                 connectedSessions: sessions,
-                sessionActivity: model.snapshot?.sessionActivity ?? [:]
+                sessionActivity: model.snapshot?.sessionActivity ?? [:],
+                sessionAttention: model.snapshot?.sessionAttention ?? [:]
             ).contains { $0.connected && $0.busy }
         } == true
         let pending = model.snapshot?.projects.reduce(0) { $0 + $1.pendingHandoffs.count } ?? 0
@@ -70,7 +71,8 @@ struct MenuBarContent: View {
             ForEach(snapshot.projects) { project in
                 let workers = project.workers(
                     connectedSessions: Set(snapshot.tmuxSessions),
-                    sessionActivity: snapshot.sessionActivity
+                    sessionActivity: snapshot.sessionActivity,
+                    sessionAttention: snapshot.sessionAttention
                 )
                 Menu(project.id) {
                     Button("Open Brain…") {
@@ -80,7 +82,7 @@ struct MenuBarContent: View {
                     }
                     Divider()
                     ForEach(workers) { worker in
-                        Button("\(worker.alias) · \(worker.connected ? (worker.busy ? "working" : "idle") : "offline")") {
+                        Button("\(worker.alias) · \(menuStatus(worker))") {
                             openTerminal(worker.session, workspace: worker.workspace)
                         }
                         .disabled(!worker.connected)
@@ -111,5 +113,14 @@ struct MenuBarContent: View {
             }
             catch { await MainActor.run { model.lastError = error.localizedDescription } }
         }
+    }
+
+    private func menuStatus(_ worker: WorkerSummary) -> String {
+        if !worker.connected { return "offline" }
+        if worker.needsAttention { return "needs confirmation" }
+        if worker.dispatchUncertain { return "dispatch unconfirmed" }
+        if worker.busy { return "working" }
+        if worker.waitingOnGoal { return "goal active" }
+        return "idle"
     }
 }

@@ -44,6 +44,7 @@ type Task struct {
 	Workspace          string    `json:"workspace"`
 	SenderSession      string    `json:"sender_session,omitempty"`
 	Status             string    `json:"status"`
+	DispatchState      string    `json:"dispatch_state,omitempty"`
 	TerminalGoalStatus string    `json:"terminal_goal_status,omitempty"`
 	ObjectivePath      string    `json:"objective_path"`
 	SentGoalObjective  string    `json:"sent_goal_objective"`

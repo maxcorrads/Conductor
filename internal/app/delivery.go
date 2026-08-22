@@ -207,11 +207,11 @@ func (a *App) FinishWorkerTask(worker, expectedTaskID, explicitMessage, goalStat
 	return a.finishTask(task.ID, explicitMessage, goalStatus, true, nil)
 }
 
-var errTaskNotRunning = errors.New("task is no longer running")
+var errTaskNotRunning = errors.New("task is no longer active")
 
 type finishTaskMutation func(st *state.State, task *state.Task) error
 
-// finishTask turns a running task into a queued handoff. Callers may provide a
+// finishTask turns an active task into a queued handoff. Callers may provide a
 // mutation that is evaluated under the state lock; reconciliation uses it to
 // prove that the worker stayed idle and that no real goal appeared meanwhile.
 func (a *App) finishTask(taskID, explicitMessage, goalStatus string, useCachedMessage bool, mutate finishTaskMutation) (string, error) {
@@ -257,6 +257,7 @@ func (a *App) finishTask(taskID, explicitMessage, goalStatus string, useCachedMe
 			}
 		}
 		current.Status = state.TaskFinished
+		current.DispatchState = ""
 		current.TerminalGoalStatus = goalStatus
 		current.LastError = ""
 		current.ReconcileToken = ""

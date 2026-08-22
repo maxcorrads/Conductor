@@ -8,10 +8,36 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(workerNumber("brain"), .max)
     }
 
+    func testWorkerWithRunningTaskIsNotReadyWhileCodexIsIdle() throws {
+        let json = #"{"id":"task-1","worker_session":"demo--worker-1","workspace":"/repo","status":"running","objective_path":"/tmp/goal.md","sent_goal_objective":"Do the work","created_at":"2026-08-22T07:00:00Z","updated_at":"2026-08-22T07:00:00Z"}"#
+        let task = try conductorDecoder().decode(ConductorTask.self, from: Data(json.utf8))
+        let worker = WorkerSummary(
+            id: "demo--worker-1",
+            alias: "worker-1",
+            session: "demo--worker-1",
+            connected: true,
+            busy: false,
+            needsAttention: false,
+            workspace: "/repo",
+            activeTask: task
+        )
+        XCTAssertTrue(worker.waitingOnGoal)
+    }
+
+    func testDispatchUncertainTaskRemainsActiveAndBlocksReadyState() throws {
+        let json = #"{"id":"demo","brain_session":"demo--brain","state_path":"/tmp/state.json","log_path":"/tmp/log","worker_sessions":["demo--worker-1"],"worker_session_template":"demo--worker-%d","task_count":1,"handoff_count":0,"history_truncated":false,"state":{"version":2,"project_id":"demo","brain":{"session":"demo--brain","busy":false},"workers":{"demo--worker-1":{"session":"demo--worker-1","busy":false}},"tasks":{"task-1":{"id":"task-1","worker_session":"demo--worker-1","workspace":"/repo","status":"running","dispatch_state":"uncertain","objective_path":"/tmp/goal.md","sent_goal_objective":"Do the work","created_at":"2026-08-22T07:00:00Z","updated_at":"2026-08-22T07:00:10Z","last_error":"dispatch unconfirmed"}},"deliveries":{}},"task_order":["task-1"],"handoff_order":[],"goal_texts":{},"goal_text_truncated":{},"handoff_messages":{},"handoff_message_truncated":{},"log_tail":""}"#
+        let project = try conductorDecoder().decode(ProjectSnapshot.self, from: Data(json.utf8))
+        let worker = try XCTUnwrap(project.workers(connectedSessions: ["demo--worker-1"]).first)
+        XCTAssertEqual(worker.activeTask?.status, "running")
+        XCTAssertEqual(worker.activeTask?.dispatchState, "uncertain")
+        XCTAssertTrue(worker.dispatchUncertain)
+        XCTAssertFalse(worker.waitingOnGoal)
+    }
+
     func testDecodesMinimalSnapshot() throws {
         let json = #"""
         {
-          "schema_version": 2,
+          "schema_version": 3,
           "conductor_version": "0.3.0",
           "generated_at": "2026-08-21T12:00:00Z",
           "conductor_home": "/tmp/conductor",
@@ -19,26 +45,29 @@ final class ModelsTests: XCTestCase {
           "tmux_executable": "/opt/homebrew/bin/tmux",
           "tmux_sessions": [],
           "session_activity": {},
+          "session_attention": {},
           "projects": []
         }
         """#
         let data = Data(json.utf8)
         let snapshot = try conductorDecoder().decode(ConductorSnapshot.self, from: data)
-        XCTAssertEqual(snapshot.schemaVersion, 2)
+        XCTAssertEqual(snapshot.schemaVersion, 3)
         XCTAssertEqual(snapshot.conductorVersion, "0.3.0")
     }
 
     func testDecodesLightweightSessionProbe() throws {
-        let json = #"{"schema_version":2,"generated_at":"2026-08-21T12:00:00Z","tmux_executable":"/opt/homebrew/bin/tmux","tmux_sessions":["brain","worker-1"],"session_activity":{"brain":true}}"#
+        let json = #"{"schema_version":3,"generated_at":"2026-08-21T12:00:00Z","tmux_executable":"/opt/homebrew/bin/tmux","tmux_sessions":["brain","worker-1"],"session_activity":{"brain":true},"session_attention":{"worker-1":true}}"#
         let probe = try conductorDecoder().decode(TmuxSessionSnapshot.self, from: Data(json.utf8))
         XCTAssertEqual(probe.tmuxSessions, ["brain", "worker-1"])
         XCTAssertEqual(probe.sessionActivity["brain"], true)
+        XCTAssertEqual(probe.sessionAttention["worker-1"], true)
         XCTAssertNil(probe.tmuxError)
     }
 
     func testRejectsLegacySnapshotSchema() {
         XCTAssertThrowsError(try validateSnapshotSchema(1))
-        XCTAssertNoThrow(try validateSnapshotSchema(2))
+        XCTAssertThrowsError(try validateSnapshotSchema(2))
+        XCTAssertNoThrow(try validateSnapshotSchema(3))
     }
 
     func testLegacyRuntimePreflightFindsRootAndProjectState() throws {
@@ -68,7 +97,7 @@ final class ModelsTests: XCTestCase {
     }
 
     func testDecodesModelCatalogWithModelSpecificEfforts() throws {
-        let json = #"{"schema_version":2,"codex_executable":"/usr/local/bin/codex","models":[{"slug":"custom","display_name":"Custom","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Deep"},{"effort":"ultra","description":"Delegated"}]}]}"#
+        let json = #"{"schema_version":3,"codex_executable":"/usr/local/bin/codex","models":[{"slug":"custom","display_name":"Custom","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high","description":"Deep"},{"effort":"ultra","description":"Delegated"}]}]}"#
         let catalog = try conductorDecoder().decode(CodexModelCatalog.self, from: Data(json.utf8))
         XCTAssertEqual(catalog.models.first?.slug, "custom")
         XCTAssertEqual(catalog.models.first?.supportedReasoningLevels.map(\.effort), ["high", "ultra"])
@@ -77,7 +106,7 @@ final class ModelsTests: XCTestCase {
     func testDecodesProjectWithEmptyCollections() throws {
         let json = #"""
         {
-          "schema_version": 2,
+          "schema_version": 3,
           "conductor_version": "0.3.0",
           "generated_at": "2026-08-21T12:00:00Z",
           "conductor_home": "/tmp/conductor",
@@ -85,6 +114,7 @@ final class ModelsTests: XCTestCase {
           "tmux_executable": "/opt/homebrew/bin/tmux",
           "tmux_sessions": [],
           "session_activity": {},
+          "session_attention": {"empty--brain": true},
           "projects": [{
             "id": "empty",
             "brain_session": "empty--brain",
@@ -121,6 +151,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.projects.first?.brainWorkspace, "/repo/brain-workspace")
         XCTAssertEqual(snapshot.projects.first?.brainBusy(sessionActivity: ["empty--brain": false]), false)
         XCTAssertEqual(snapshot.projects.first?.brainBusy(sessionActivity: [:]), true)
+        XCTAssertEqual(snapshot.projects.first?.brainNeedsAttention(sessionAttention: snapshot.sessionAttention), true)
         XCTAssertEqual(snapshot.projects.first?.handoffMessageTruncated["handoff"], true)
     }
 
@@ -277,7 +308,7 @@ final class ModelsTests: XCTestCase {
     func testWatchPathsIncludeLogFileAndDirectory() throws {
         let json = #"""
         {
-          "schema_version": 2,
+          "schema_version": 3,
           "conductor_version": "0.3.0",
           "generated_at": "2026-08-21T12:00:00Z",
           "conductor_home": "/tmp/conductor",
@@ -285,6 +316,7 @@ final class ModelsTests: XCTestCase {
           "tmux_executable": "/opt/homebrew/bin/tmux",
           "tmux_sessions": [],
           "session_activity": {},
+          "session_attention": {},
           "projects": [{
             "id": "empty",
             "brain_session": "empty--brain",

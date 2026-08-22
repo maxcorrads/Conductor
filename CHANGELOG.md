@@ -6,6 +6,21 @@ Historical entries use the current **Brain** and **Worker** role terminology.
 Session spellings from releases before 0.3 are described as legacy labels because
 0.3 intentionally replaces that namespace instead of migrating it.
 
+## 0.4.1 — 2026-08-22
+
+### Fixed
+
+- Goal dispatch now waits for an observable Codex acknowledgement, confirms a
+  delayed **Replace goal?** dialog, refuses to type into an active turn, and
+  preserves ambiguous post-submit outcomes as a backward-compatible running
+  task marked `dispatch_state: uncertain` until a later hook or explicit user
+  action resolves them.
+- Existing 0.4.0 configuration files automatically receive the new 10-second
+  `goal_dispatch_timeout_ms` default without requiring a manual migration.
+- The macOS dashboard now shows replacement dialogs as **Needs confirmation**
+  and idle Workers with a running Conductor task as **Goal active**, instead of
+  incorrectly presenting either state as green **Ready**.
+
 ## 0.4.0 — 2026-08-21
 
 ### Added

@@ -95,6 +95,7 @@ func (a *App) handlePostToolUse(role resolvedRole, input HookInput) error {
 		if task == nil {
 			return nil
 		}
+		task.DispatchState = ""
 		task.ObservedGoalStatus = status
 		task.GoalObservedAt = now
 		task.ReconcileToken = ""
@@ -274,6 +275,10 @@ func (a *App) handlePromptSubmit(role resolvedRole, input HookInput) error {
 			worker.Busy = true
 			worker.UpdatedAt = now
 			if task := state.ActiveTaskForWorker(st, role.Session); task != nil {
+				if task.DispatchState == "uncertain" {
+					task.DispatchState = ""
+					task.LastError = ""
+				}
 				task.CodexSessionID = input.SessionID
 				// Any later worker turn invalidates an implicit-completion check
 				// scheduled by the preceding Stop.
@@ -422,6 +427,10 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 	if err := a.Store.Update(func(st *state.State) error {
 		current := st.Tasks[task.ID]
 		if current != nil && current.Status == state.TaskRunning {
+			if current.DispatchState == "uncertain" {
+				current.DispatchState = ""
+				current.LastError = ""
+			}
 			current.CodexSessionID = input.SessionID
 			current.TranscriptPath = transcriptPath
 			if messageCached {
