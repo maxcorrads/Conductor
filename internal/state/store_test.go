@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,23 @@ import (
 
 	"github.com/maxcorrads/conductor/internal/config"
 )
+
+func TestUncertainDispatchRemainsRunningForOlderReaders(t *testing.T) {
+	task := Task{ID: "task-1", Status: TaskRunning, DispatchState: "uncertain"}
+	data, err := json.Marshal(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldShape struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &oldShape); err != nil {
+		t.Fatal(err)
+	}
+	if oldShape.Status != TaskRunning {
+		t.Fatalf("older reader would not preserve active status: %s", data)
+	}
+}
 
 func testPaths(dir string) config.Paths {
 	return config.Paths{

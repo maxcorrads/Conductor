@@ -151,15 +151,15 @@ The tmux transport test suite covers multiline buffer loading and Enter submissi
 
 ## Worker is stuck at `Replace goal?`
 
-Codex asks for confirmation when a previous goal is still `active`, `paused`, `blocked`, usage-limited, or budget-limited. Conductor briefly probes the visible tmux pane for the exact replacement dialog and confirms **Replace current goal** automatically.
+Codex asks for confirmation when a previous goal is still `active`, `paused`, `blocked`, usage-limited, or budget-limited. Conductor observes the visible tmux pane until it sees either an active turn or the exact replacement dialog, then confirms **Replace current goal** automatically. If input was already submitted but the result cannot be confirmed, Conductor reports an error and keeps the task active with `dispatch_state: uncertain`; this blocks unsafe retries until a later Codex hook or an explicit manual finish resolves it.
 
-For a session already stuck on the dialog, press Enter once to accept the selected replacement. Alternatively press Escape, clear the goal from Codex's Goal progress controls, and resend the assignment. Then verify the installed version:
+For a session already stuck on the dialog, press Enter once to accept the selected replacement. Alternatively press Escape, run `/goal clear`, and resend the assignment. Then verify the installed version:
 
 ```bash
 conductor version
 ```
 
-The timing knobs are `goal_prefix_delay_ms` and `goal_replace_probe_ms` in `~/.conductor/config.json`. Increase them only when a consistently slow machine still reproduces the issue.
+The timing knobs are `goal_prefix_delay_ms` and `goal_dispatch_timeout_ms` in `~/.conductor/config.json`. Increase the timeout only when a consistently slow machine still reproduces the issue.
 
 ## Worker receives literal `/goal ...` as an ordinary message
 

@@ -17,10 +17,11 @@ import (
 	"github.com/maxcorrads/conductor/internal/config"
 	"github.com/maxcorrads/conductor/internal/project"
 	"github.com/maxcorrads/conductor/internal/state"
+	"github.com/maxcorrads/conductor/internal/tmux"
 )
 
 const (
-	guiSnapshotSchemaVersion = 2
+	guiSnapshotSchemaVersion = 3
 	guiMaxRecentRecords      = 100
 	guiMaxSelectedRecords    = 200
 	guiMaxTotalTextBytes     = 16 * 1024 * 1024
@@ -35,17 +36,19 @@ type guiSnapshot struct {
 	TmuxExecutable   string               `json:"tmux_executable"`
 	TmuxSessions     []string             `json:"tmux_sessions"`
 	SessionActivity  map[string]bool      `json:"session_activity"`
+	SessionAttention map[string]bool      `json:"session_attention"`
 	TmuxError        string               `json:"tmux_error,omitempty"`
 	Projects         []guiProjectSnapshot `json:"projects"`
 }
 
 type guiSessionSnapshot struct {
-	SchemaVersion   int             `json:"schema_version"`
-	GeneratedAt     time.Time       `json:"generated_at"`
-	TmuxExecutable  string          `json:"tmux_executable"`
-	TmuxSessions    []string        `json:"tmux_sessions"`
-	SessionActivity map[string]bool `json:"session_activity"`
-	TmuxError       string          `json:"tmux_error,omitempty"`
+	SchemaVersion    int             `json:"schema_version"`
+	GeneratedAt      time.Time       `json:"generated_at"`
+	TmuxExecutable   string          `json:"tmux_executable"`
+	TmuxSessions     []string        `json:"tmux_sessions"`
+	SessionActivity  map[string]bool `json:"session_activity"`
+	SessionAttention map[string]bool `json:"session_attention"`
+	TmuxError        string          `json:"tmux_error,omitempty"`
 }
 
 type guiModelCatalog struct {
@@ -215,11 +218,12 @@ func buildGUISessionSnapshot() (guiSessionSnapshot, error) {
 		return guiSessionSnapshot{}, err
 	}
 	probe := guiSessionSnapshot{
-		SchemaVersion:   guiSnapshotSchemaVersion,
-		GeneratedAt:     time.Now().UTC(),
-		TmuxExecutable:  projectApp.Config.TmuxCommand,
-		TmuxSessions:    []string{},
-		SessionActivity: map[string]bool{},
+		SchemaVersion:    guiSnapshotSchemaVersion,
+		GeneratedAt:      time.Now().UTC(),
+		TmuxExecutable:   projectApp.Config.TmuxCommand,
+		TmuxSessions:     []string{},
+		SessionActivity:  map[string]bool{},
+		SessionAttention: map[string]bool{},
 	}
 	if resolvedTmux, resolveErr := exec.LookPath(projectApp.Config.TmuxCommand); resolveErr == nil {
 		probe.TmuxExecutable = resolvedTmux
@@ -230,7 +234,7 @@ func buildGUISessionSnapshot() (guiSessionSnapshot, error) {
 	} else {
 		sort.Strings(sessions)
 		probe.TmuxSessions = sessions
-		probe.SessionActivity = detectSessionActivity(
+		probe.SessionActivity, probe.SessionAttention = detectSessionSignals(
 			projectApp.Config.TmuxCommand,
 			conductorSessions(sessions, projectApp.Config),
 		)
@@ -249,6 +253,7 @@ func buildGUISnapshot() (guiSnapshot, error) {
 		GeneratedAt:      time.Now().UTC(),
 		TmuxSessions:     []string{},
 		SessionActivity:  map[string]bool{},
+		SessionAttention: map[string]bool{},
 		Projects:         make([]guiProjectSnapshot, 0, len(ids)),
 	}
 	projectTextBudget := int64(guiMaxTotalTextBytes)
@@ -273,7 +278,7 @@ func buildGUISnapshot() (guiSnapshot, error) {
 			} else {
 				sort.Strings(sessions)
 				snapshot.TmuxSessions = sessions
-				snapshot.SessionActivity = detectSessionActivity(
+				snapshot.SessionActivity, snapshot.SessionAttention = detectSessionSignals(
 					projectApp.Config.TmuxCommand,
 					conductorSessions(sessions, projectApp.Config),
 				)
@@ -354,14 +359,15 @@ func buildGUISnapshot() (guiSnapshot, error) {
 	return snapshot, nil
 }
 
-func detectSessionActivity(tmuxCommand string, sessions []string) map[string]bool {
+func detectSessionSignals(tmuxCommand string, sessions []string) (map[string]bool, map[string]bool) {
 	activity := make(map[string]bool, len(sessions))
+	attention := make(map[string]bool, len(sessions))
 	if len(sessions) == 0 {
-		return activity
+		return activity, attention
 	}
 	nonceBytes := make([]byte, 16)
 	if _, err := rand.Read(nonceBytes); err != nil {
-		return activity
+		return activity, attention
 	}
 	nonce := hex.EncodeToString(nonceBytes)
 	args := make([]string, 0, len(sessions)*14)
@@ -384,7 +390,7 @@ func detectSessionActivity(tmuxCommand string, sessions []string) map[string]boo
 		// A pane may disappear between list-sessions and this batch. In that case,
 		// keep the authoritative hook state instead of projecting every later
 		// session as idle after tmux aborts the remaining commands.
-		return activity
+		return activity, attention
 	}
 	content := string(output)
 	for index, session := range sessions {
@@ -398,9 +404,12 @@ func detectSessionActivity(tmuxCommand string, sessions []string) map[string]boo
 			continue
 		}
 		end := start + endOffset
-		activity[session] = paneShowsActiveTurn(content[start:end])
+		pane := content[start:end]
+		active := paneShowsActiveTurn(pane)
+		activity[session] = active
+		attention[session] = !active && tmux.PaneShowsReplaceGoalPrompt(pane)
 	}
-	return activity
+	return activity, attention
 }
 
 func conductorSessions(sessions []string, cfg config.Config) []string {
@@ -414,32 +423,7 @@ func conductorSessions(sessions []string, cfg config.Config) []string {
 }
 
 func paneShowsActiveTurn(content string) bool {
-	busy := false
-	for _, line := range strings.Split(strings.ToLower(content), "\n") {
-		line = codexStatusLine(line)
-		working := strings.HasPrefix(line, "• working") || strings.HasPrefix(line, "working")
-		if working && (strings.Contains(line, "esc to interrupt") || strings.Contains(line, "esc to cancel")) {
-			busy = true
-			continue
-		}
-		if strings.HasPrefix(line, "worked for") ||
-			strings.HasPrefix(line, "goal paused") ||
-			strings.HasPrefix(line, "goal stalled") ||
-			strings.HasPrefix(line, "conversation interrupted") {
-			busy = false
-		}
-	}
-	return busy
-}
-
-func codexStatusLine(line string) string {
-	line = strings.TrimSpace(line)
-	for _, prefix := range []string{"•", "—", "■", "▪", "●"} {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		}
-	}
-	return line
+	return tmux.PaneShowsActiveTurn(content)
 }
 
 func paneShowsEmptyComposer(content string) bool {
@@ -592,6 +576,9 @@ func (snapshot *guiSnapshot) normalizeCollections() {
 	}
 	if snapshot.SessionActivity == nil {
 		snapshot.SessionActivity = map[string]bool{}
+	}
+	if snapshot.SessionAttention == nil {
+		snapshot.SessionAttention = map[string]bool{}
 	}
 	if snapshot.Projects == nil {
 		snapshot.Projects = []guiProjectSnapshot{}

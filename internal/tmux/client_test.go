@@ -53,7 +53,14 @@ func TestExecClientSendsGoalPrefixSeparatelyFromPastedObjective(t *testing.T) {
 	body := `#!/bin/sh
 set -eu
 case "$1" in
-  capture-pane) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  capture-pane)
+    count=0
+    if [ -f "$FAKE_TMUX_DIR/capture-count" ]; then count=$(cat "$FAKE_TMUX_DIR/capture-count"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$FAKE_TMUX_DIR/capture-count"
+    printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls"
+    if [ "$count" -ge 2 ]; then printf '• Working (1s • esc to interrupt)\n'; fi
+    ;;
   load-buffer) cat > "$FAKE_TMUX_DIR/payload"; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   send-keys) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
@@ -64,7 +71,10 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("FAKE_TMUX_DIR", dir)
-	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{})
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
+		DispatchTimeout:       50 * time.Millisecond,
+		DispatchProbeInterval: time.Millisecond,
+	})
 	objective := "line one\nline two\n" + strings.Repeat("x", 1_200)
 	if err := client.SendGoal("%1", objective); err != nil {
 		t.Fatal(err)
@@ -114,8 +124,10 @@ case "$1" in
     count=$((count + 1))
     printf '%s' "$count" > "$FAKE_TMUX_DIR/capture-count"
     printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls"
-    if [ "$count" -ge 2 ]; then
+    if [ "$count" -eq 2 ]; then
       printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n'
+    elif [ "$count" -ge 3 ]; then
+      printf '• Working (1s • esc to interrupt)\n'
     fi
     ;;
   load-buffer) cat >/dev/null; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
@@ -129,8 +141,8 @@ esac
 	}
 	t.Setenv("FAKE_TMUX_DIR", dir)
 	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
-		ReplaceProbeTimeout:  50 * time.Millisecond,
-		ReplaceProbeInterval: time.Millisecond,
+		DispatchTimeout:       50 * time.Millisecond,
+		DispatchProbeInterval: time.Millisecond,
 	})
 	if err := client.SendGoal("%1", "new objective"); err != nil {
 		t.Fatal(err)
@@ -150,7 +162,16 @@ func TestExecClientDismissesStaleReplacePromptBeforeDispatch(t *testing.T) {
 	body := `#!/bin/sh
 set -eu
 case "$1" in
-  capture-pane) printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n'; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  capture-pane)
+    count=0
+    if [ -f "$FAKE_TMUX_DIR/capture-count" ]; then count=$(cat "$FAKE_TMUX_DIR/capture-count"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$FAKE_TMUX_DIR/capture-count"
+    case "$count" in
+      1|2|4) printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n' ;;
+    esac
+    printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls"
+    ;;
   load-buffer) cat >/dev/null; printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
   send-keys) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
@@ -161,7 +182,10 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("FAKE_TMUX_DIR", dir)
-	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{})
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
+		DispatchTimeout:       50 * time.Millisecond,
+		DispatchProbeInterval: time.Millisecond,
+	})
 	client.sleep = func(time.Duration) {}
 	if err := client.SendGoal("%1", "new objective"); err != nil {
 		t.Fatal(err)
@@ -176,11 +200,179 @@ esac
 	}
 }
 
+func TestExecClientDoesNotTypeGoalUntilStaleDialogIsGone(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tmux")
+	body := `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane) printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n' ;;
+  send-keys)
+    if [ "$4" = Escape ]; then printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls"; else printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/unsafe"; fi
+    ;;
+  load-buffer|paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/unsafe" ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_DIR", dir)
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
+		DispatchTimeout:       5 * time.Millisecond,
+		DispatchProbeInterval: time.Millisecond,
+	})
+	err := client.SendGoal("%1", "must not be typed")
+	if err == nil || !strings.Contains(err.Error(), "no new goal was typed") {
+		t.Fatalf("expected stale-dialog timeout, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "unsafe")); !os.IsNotExist(err) {
+		t.Fatal("goal keys were sent before the stale dialog disappeared")
+	}
+}
+
+func TestExecClientWaitsForDelayedReplaceGoalPrompt(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tmux")
+	body := `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane)
+    count=0
+    if [ -f "$FAKE_TMUX_DIR/capture-count" ]; then count=$(cat "$FAKE_TMUX_DIR/capture-count"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$FAKE_TMUX_DIR/capture-count"
+    printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls"
+    if [ "$count" -eq 8 ]; then
+      printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n'
+    fi
+    ;;
+  load-buffer) cat >/dev/null ;;
+  paste-buffer) ;;
+  send-keys) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_DIR", dir)
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
+		DispatchTimeout:       100 * time.Millisecond,
+		DispatchProbeInterval: time.Millisecond,
+	})
+	if err := client.SendGoal("%1", "delayed replacement"); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(calls), "send-keys -t %1 Enter\n"); got != 2 {
+		t.Fatalf("expected submit and delayed replacement confirmation; got %d\n%s", got, calls)
+	}
+}
+
+func TestExecClientFailsWhenGoalDispatchCannotBeConfirmed(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tmux")
+	body := `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane) ;;
+  load-buffer) cat >/dev/null ;;
+  paste-buffer) ;;
+  send-keys) ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
+		DispatchTimeout:       5 * time.Millisecond,
+		DispatchProbeInterval: time.Millisecond,
+	})
+	err := client.SendGoal("%1", "unconfirmed")
+	if err == nil || !strings.Contains(err.Error(), "was not confirmed") {
+		t.Fatalf("expected explicit dispatch failure, got %v", err)
+	}
+	if !IsGoalDispatchUncertain(err) {
+		t.Fatalf("post-submit timeout was not classified uncertain: %T %v", err, err)
+	}
+}
+
+func TestExecClientRefusesGoalWhileWorkerTurnIsActive(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tmux")
+	body := `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane) printf '• Working (4s • esc to interrupt)\n' ;;
+  send-keys|load-buffer|paste-buffer) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/mutations" ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_DIR", dir)
+	err := New(script).SendGoal("%1", "must not be typed")
+	if err == nil || !strings.Contains(err.Error(), "active Codex turn") {
+		t.Fatalf("expected active-turn refusal, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "mutations")); !os.IsNotExist(err) {
+		t.Fatal("goal dispatch mutated an active Worker pane")
+	}
+}
+
+func TestExecClientFailsOnStaleDialogAboveAnActiveTurn(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "tmux")
+	body := `#!/bin/sh
+set -eu
+case "$1" in
+  capture-pane)
+    count=0
+    if [ -f "$FAKE_TMUX_DIR/capture-count" ]; then count=$(cat "$FAKE_TMUX_DIR/capture-count"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$FAKE_TMUX_DIR/capture-count"
+    if [ "$count" -ge 2 ]; then
+      printf 'Replace goal?\n1. Replace current goal  Set the new objective and start it now\n2. Cancel  Keep the current goal\n• Working (1s • esc to interrupt)\n'
+    fi
+    ;;
+  load-buffer) cat >/dev/null ;;
+  paste-buffer) ;;
+  send-keys) printf '%s\n' "$*" >> "$FAKE_TMUX_DIR/calls" ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_DIR", dir)
+	client := NewWithGoalDispatchOptions(script, GoalDispatchOptions{
+		DispatchTimeout:       50 * time.Millisecond,
+		DispatchProbeInterval: time.Millisecond,
+	})
+	err := client.SendGoal("%1", "new objective")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous dispatch failure, got %v", err)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(calls), "send-keys -t %1 Enter\n"); got != 1 {
+		t.Fatalf("ambiguous dialog triggered an unsafe confirmation; Enter count=%d\n%s", got, calls)
+	}
+}
+
 func TestReplaceGoalPromptDetectionRequiresExactMarkers(t *testing.T) {
-	if !isReplaceGoalPrompt("Replace goal?\nReplace current goal\nSet the new objective and start it now\nKeep the current goal") {
+	if !PaneShowsReplaceGoalPrompt("Replace goal?\nReplace current goal\nSet the new objective and start it now\nKeep the current goal") {
 		t.Fatal("expected exact replacement prompt to be recognized")
 	}
-	if isReplaceGoalPrompt("A log line mentioning Replace goal? only") {
+	if PaneShowsReplaceGoalPrompt("A log line mentioning Replace goal? only") {
 		t.Fatal("partial text must not trigger automatic Enter")
 	}
 }

@@ -25,6 +25,7 @@ struct RootView: View {
                     project: project,
                     connectedSessions: Set(snapshot.tmuxSessions),
                     sessionActivity: snapshot.sessionActivity,
+                    sessionAttention: snapshot.sessionAttention,
                     onGoal: { goalTarget = WorkerActionTarget(projectID: project.id, worker: $0) },
                     onFinish: { finishTarget = WorkerActionTarget(projectID: project.id, worker: $0) },
                     onOpenBrain: { brainLaunchTarget = ProjectActionTarget(projectID: project.id) },
@@ -141,6 +142,8 @@ struct ProjectSidebar: View {
                             color: brainColor(project),
                             pulse: brainConnected(project) && project.brainBusy(
                                 sessionActivity: model.snapshot?.sessionActivity ?? [:]
+                            ) && !project.brainNeedsAttention(
+                                sessionAttention: model.snapshot?.sessionAttention ?? [:]
                             )
                         )
                         VStack(alignment: .leading, spacing: 2) {
@@ -190,13 +193,20 @@ struct ProjectSidebar: View {
 
     private func projectSummary(_ project: ProjectSnapshot) -> String {
         if !brainConnected(project) { return "Brain offline" }
+        if project.brainNeedsAttention(sessionAttention: model.snapshot?.sessionAttention ?? [:]) { return "Brain needs confirmation" }
         if project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:]) { return "Brain active" }
         let sessions = Set(model.snapshot?.tmuxSessions ?? [])
-        let busy = project.workers(
+        let workers = project.workers(
             connectedSessions: sessions,
-            sessionActivity: model.snapshot?.sessionActivity ?? [:]
-        ).filter { $0.connected && $0.busy }.count
+            sessionActivity: model.snapshot?.sessionActivity ?? [:],
+            sessionAttention: model.snapshot?.sessionAttention ?? [:]
+        )
+        let uncertain = workers.filter { $0.connected && $0.dispatchUncertain }.count
+        if uncertain > 0 { return "\(uncertain) dispatch unconfirmed" }
+        let busy = workers.filter { $0.connected && $0.busy }.count
         if busy > 0 { return "\(busy) worker active" }
+        let activeGoals = workers.filter { $0.connected && $0.activeTask != nil }.count
+        if activeGoals > 0 { return "\(activeGoals) goal active" }
         if !project.pendingHandoffs.isEmpty { return "Handoff ready" }
         return "Idle"
     }
@@ -208,7 +218,8 @@ struct ProjectSidebar: View {
     private func brainColor(_ project: ProjectSnapshot) -> Color {
         ConductorTheme.statusColor(
             connected: brainConnected(project),
-            busy: project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:])
+            busy: project.brainBusy(sessionActivity: model.snapshot?.sessionActivity ?? [:]),
+            attention: project.brainNeedsAttention(sessionAttention: model.snapshot?.sessionAttention ?? [:])
         )
     }
 }
@@ -218,6 +229,7 @@ struct ControlRoomView: View {
     let project: ProjectSnapshot
     let connectedSessions: Set<String>
     let sessionActivity: [String: Bool]
+    let sessionAttention: [String: Bool]
     let onGoal: (WorkerSummary) -> Void
     let onFinish: (WorkerSummary) -> Void
     let onOpenBrain: () -> Void
@@ -227,10 +239,15 @@ struct ControlRoomView: View {
     let onForceFlush: () -> Void
 
     private var workers: [WorkerSummary] {
-        project.workers(connectedSessions: connectedSessions, sessionActivity: sessionActivity)
+        project.workers(
+            connectedSessions: connectedSessions,
+            sessionActivity: sessionActivity,
+            sessionAttention: sessionAttention
+        )
     }
     private var brainConnected: Bool { connectedSessions.contains(project.brainSession) }
     private var brainBusy: Bool { project.brainBusy(sessionActivity: sessionActivity) }
+    private var brainNeedsAttention: Bool { project.brainNeedsAttention(sessionAttention: sessionAttention) }
 
     var body: some View {
         ScrollView {
@@ -252,7 +269,7 @@ struct ControlRoomView: View {
                 Text("CONTROL ROOM").font(.caption.weight(.semibold)).tracking(1.6).foregroundStyle(ConductorTheme.signal)
                 Text(project.id == "default" ? "Default project" : project.id)
                     .font(.system(size: 28, weight: .semibold, design: .rounded))
-                Text("\(workers.filter(\.connected).count) connected · \(workers.filter { $0.connected && $0.busy }.count) working")
+                Text(workerStatusSummary)
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -261,6 +278,17 @@ struct ControlRoomView: View {
             }
             .buttonStyle(.borderedProminent)
         }
+    }
+
+    private var workerStatusSummary: String {
+        let connected = workers.filter(\.connected).count
+        let working = workers.filter { $0.connected && $0.busy }.count
+        let attention = workers.filter { $0.connected && ($0.needsAttention || $0.dispatchUncertain) }.count
+        let waiting = workers.filter(\.waitingOnGoal).count
+        var parts = ["\(connected) connected", "\(working) working"]
+        if attention > 0 { parts.append("\(attention) need attention") }
+        if waiting > 0 { parts.append("\(waiting) goal active") }
+        return parts.joined(separator: " · ")
     }
 
     private var brainCard: some View {
@@ -276,10 +304,10 @@ struct ControlRoomView: View {
                 }
                 Spacer()
                 StatusDot(
-                    color: ConductorTheme.statusColor(connected: brainConnected, busy: brainBusy),
+                    color: ConductorTheme.statusColor(connected: brainConnected, busy: brainBusy, attention: brainNeedsAttention),
                     pulse: brainConnected && brainBusy
                 )
-                Text(brainConnected ? (brainBusy ? "Active" : "Idle") : "Offline")
+                Text(brainConnected ? (brainNeedsAttention ? "Needs confirmation" : (brainBusy ? "Active" : "Idle")) : "Offline")
                     .foregroundStyle(.secondary)
                 Button("Focus terminal", systemImage: "viewfinder", action: onFocusBrain)
                     .labelStyle(.iconOnly)
@@ -413,14 +441,17 @@ struct WorkerRow: View {
         HStack(spacing: 14) {
             ZStack {
                 Circle().fill(Color(nsColor: .controlBackgroundColor)).frame(width: 38, height: 38)
-                StatusDot(color: ConductorTheme.statusColor(connected: worker.connected, busy: worker.busy), pulse: worker.connected && worker.busy)
+                StatusDot(
+                    color: ConductorTheme.statusColor(connected: worker.connected, busy: worker.busy, attention: worker.needsAttention || worker.dispatchUncertain || worker.waitingOnGoal),
+                    pulse: worker.connected && worker.busy && !worker.needsAttention && !worker.dispatchUncertain
+                )
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 7) {
                     Text(worker.alias).font(.headline)
-                    Text(worker.connected ? (worker.busy ? "Working" : "Ready") : "Offline")
+                    Text(workerStatus)
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(ConductorTheme.statusColor(connected: worker.connected, busy: worker.busy))
+                        .foregroundStyle(ConductorTheme.statusColor(connected: worker.connected, busy: worker.busy, attention: worker.needsAttention || worker.dispatchUncertain || worker.waitingOnGoal))
                 }
                 Text(worker.activeTask?.sentGoalObjective ?? (worker.workspace.isEmpty ? worker.session : worker.workspace))
                     .font(worker.activeTask == nil ? .caption : .subheadline)
@@ -439,7 +470,7 @@ struct WorkerRow: View {
             Button("Goal", systemImage: "paperplane", action: onGoal)
                 .labelStyle(.iconOnly)
                 .help("Send goal")
-                .disabled(!worker.connected || worker.busy || worker.activeTask != nil)
+                .disabled(!worker.connected || worker.busy || worker.needsAttention || worker.activeTask != nil)
             if worker.activeTask != nil {
                 Button("Finish", systemImage: "checkmark.circle", action: onFinish).labelStyle(.iconOnly).help("Finish manually")
             }
@@ -451,5 +482,14 @@ struct WorkerRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
+    }
+
+    private var workerStatus: String {
+        if !worker.connected { return "Offline" }
+        if worker.needsAttention { return "Needs confirmation" }
+        if worker.dispatchUncertain { return "Dispatch unconfirmed" }
+        if worker.busy { return "Working" }
+        if worker.waitingOnGoal { return "Goal active" }
+        return "Ready"
     }
 }

@@ -35,6 +35,18 @@ type blockingPromptTmux struct {
 	release chan struct{}
 }
 
+type blockingGoalTmux struct {
+	*fakeTmux
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingGoalTmux) SendGoal(target, objective string) error {
+	close(f.started)
+	<-f.release
+	return f.fakeTmux.SendGoal(target, objective)
+}
+
 func (f *blockingPromptTmux) SendPrompt(target, prompt string) error {
 	close(f.started)
 	<-f.release
@@ -532,6 +544,76 @@ func TestDelegateFailureDoesNotLeaveWorkerBusy(t *testing.T) {
 	}
 	if failed == nil || failed.Status != state.TaskFailed {
 		t.Fatalf("task was not marked failed: %+v", failed)
+	}
+}
+
+func TestUncertainDispatchStaysRunningAndBlocksRetryUntilHook(t *testing.T) {
+	a, fake, _ := testApp(t)
+	fake.sendErr = &tmux.GoalDispatchUncertainError{Err: fmt.Errorf("dispatch unconfirmed")}
+	if _, err := a.Delegate("worker-1", "Task"); err == nil {
+		t.Fatal("expected uncertain delegation to report an error")
+	}
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := state.ActiveTaskForWorker(&st, "worker-1")
+	if task == nil || task.Status != state.TaskRunning || task.DispatchState != "uncertain" {
+		t.Fatalf("uncertain dispatch did not remain backward-compatible and active: %+v", task)
+	}
+	if _, err := a.Delegate("worker-1", "Unsafe retry"); err == nil {
+		t.Fatal("uncertain dispatch allowed a second goal")
+	}
+
+	fake.setCurrent("worker-1")
+	if err := a.HandleHook("user-prompt-submit", HookInput{SessionID: "worker-thread", CWD: "/repo/worktrees/worker-1", TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err = a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Tasks[task.ID]; got.DispatchState != "" || got.Status != state.TaskRunning {
+		t.Fatalf("later hook did not resolve uncertain dispatch: %+v", got)
+	}
+}
+
+func TestUncertainDispatchCleanupDoesNotResurrectFinishedTask(t *testing.T) {
+	a, fake, _ := testApp(t)
+	fake.sendErr = &tmux.GoalDispatchUncertainError{Err: fmt.Errorf("dispatch unconfirmed")}
+	blocking := &blockingGoalTmux{fakeTmux: fake, started: make(chan struct{}), release: make(chan struct{})}
+	a.Tmux = blocking
+
+	delegated := make(chan error, 1)
+	go func() {
+		_, err := a.Delegate("worker-1", "Task")
+		delegated <- err
+	}()
+	<-blocking.started
+
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := state.ActiveTaskForWorker(&st, "worker-1")
+	if task == nil {
+		t.Fatal("task was not recorded before transport")
+	}
+	if _, err := a.finishTask(task.ID, "finished concurrently", "manual", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	close(blocking.release)
+	if err := <-delegated; err != nil {
+		t.Fatalf("resolved concurrent dispatch returned an error: %v", err)
+	}
+
+	st, err = a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := st.Tasks[task.ID]
+	if finished.Status != state.TaskFinished || finished.DispatchState != "" || finished.TerminalGoalStatus != "manual" {
+		t.Fatalf("stale transport cleanup resurrected a finished task: %+v", finished)
 	}
 }
 

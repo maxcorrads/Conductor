@@ -173,6 +173,9 @@ func TestGUISnapshotNormalizesEmptyCollections(t *testing.T) {
 	if decoded.TmuxSessions == nil || len(decoded.Projects) != 1 {
 		t.Fatalf("snapshot collections were not normalized: %s", data)
 	}
+	if snapshot.SessionAttention == nil {
+		t.Fatal("session attention was not normalized")
+	}
 	project := decoded.Projects[0]
 	if project.WorkerSessions == nil || project.TaskOrder == nil || project.HandoffOrder == nil || project.GoalTexts == nil || project.GoalTextTruncated == nil || project.HandoffMessages == nil || project.HandoffTextTruncated == nil {
 		t.Fatalf("project collections were not normalized: %s", data)
@@ -276,8 +279,9 @@ func TestGUIActivityBatchDoesNotProjectIdleWhenTmuxAborts(t *testing.T) {
 	if err := os.WriteFile(fakeTmux, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := detectSessionActivity(fakeTmux, []string{"brain", "worker-1"}); len(got) != 0 {
-		t.Fatalf("failed batch projected activity: %+v", got)
+	activity, attention := detectSessionSignals(fakeTmux, []string{"brain", "worker-1"})
+	if len(activity) != 0 || len(attention) != 0 {
+		t.Fatalf("failed batch projected signals: activity=%+v attention=%+v", activity, attention)
 	}
 }
 
@@ -295,9 +299,54 @@ done
 	if err := os.WriteFile(fakeTmux, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	got := detectSessionActivity(fakeTmux, []string{"brain", "worker-1"})
-	if !got["brain"] || got["worker-1"] {
-		t.Fatalf("parsed batch activity = %+v", got)
+	activity, attention := detectSessionSignals(fakeTmux, []string{"brain", "worker-1"})
+	if !activity["brain"] || activity["worker-1"] {
+		t.Fatalf("parsed batch activity = %+v", activity)
+	}
+	if attention["brain"] || attention["worker-1"] {
+		t.Fatalf("unexpected attention signals = %+v", attention)
+	}
+}
+
+func TestGUISessionProbeDetectsReplaceGoalAttention(t *testing.T) {
+	fakeTmux := filepath.Join(t.TempDir(), "tmux")
+	script := `#!/bin/sh
+for argument do
+  case "$argument" in
+    *__CONDUCTOR_ACTIVITY_*_0_BEGIN__)
+      printf '%s\n' "$argument" 'Replace goal?' '1. Replace current goal  Set the new objective and start it now' '2. Cancel  Keep the current goal'
+      ;;
+    *__CONDUCTOR_ACTIVITY_*_END__) printf '%s\n' "$argument" ;;
+  esac
+done
+`
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	activity, attention := detectSessionSignals(fakeTmux, []string{"worker-1"})
+	if activity["worker-1"] || !attention["worker-1"] {
+		t.Fatalf("replace dialog signals: activity=%+v attention=%+v", activity, attention)
+	}
+}
+
+func TestGUISessionProbePrefersCurrentWorkingOverHistoricalReplaceDialog(t *testing.T) {
+	fakeTmux := filepath.Join(t.TempDir(), "tmux")
+	script := `#!/bin/sh
+for argument do
+  case "$argument" in
+    *__CONDUCTOR_ACTIVITY_*_0_BEGIN__)
+      printf '%s\n' "$argument" 'Replace goal?' '1. Replace current goal  Set the new objective and start it now' '2. Cancel  Keep the current goal' '• Working (2s • esc to interrupt)'
+      ;;
+    *__CONDUCTOR_ACTIVITY_*_END__) printf '%s\n' "$argument" ;;
+  esac
+done
+`
+	if err := os.WriteFile(fakeTmux, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	activity, attention := detectSessionSignals(fakeTmux, []string{"worker-1"})
+	if !activity["worker-1"] || attention["worker-1"] {
+		t.Fatalf("historical dialog overrode current activity: activity=%+v attention=%+v", activity, attention)
 	}
 }
 

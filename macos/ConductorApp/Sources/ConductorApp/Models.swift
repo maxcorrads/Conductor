@@ -9,6 +9,7 @@ struct ConductorSnapshot: Decodable {
     let tmuxExecutable: String
     let tmuxSessions: [String]
     let sessionActivity: [String: Bool]
+    let sessionAttention: [String: Bool]
     let tmuxError: String?
     let projects: [ProjectSnapshot]
 }
@@ -19,6 +20,7 @@ struct TmuxSessionSnapshot: Decodable {
     let tmuxExecutable: String
     let tmuxSessions: [String]
     let sessionActivity: [String: Bool]
+    let sessionAttention: [String: Bool]
     let tmuxError: String?
 }
 
@@ -76,6 +78,10 @@ struct ProjectSnapshot: Decodable, Identifiable {
 
     func brainBusy(sessionActivity: [String: Bool]) -> Bool {
         sessionActivity[brainSession] ?? state.brain.busy
+    }
+
+    func brainNeedsAttention(sessionAttention: [String: Bool]) -> Bool {
+        sessionAttention[brainSession] == true
     }
 
     var brainWorkspace: String {
@@ -142,7 +148,11 @@ struct ProjectSnapshot: Decodable, Identifiable {
         return lines.joined(separator: "\n")
     }
 
-    func workers(connectedSessions: Set<String>, sessionActivity: [String: Bool] = [:]) -> [WorkerSummary] {
+    func workers(
+        connectedSessions: Set<String>,
+        sessionActivity: [String: Bool] = [:],
+        sessionAttention: [String: Bool] = [:]
+    ) -> [WorkerSummary] {
         let sessions = Set(workerSessions)
         return sessions.compactMap { session in
             guard let alias = workerAlias(for: session) else { return nil }
@@ -154,6 +164,7 @@ struct ProjectSnapshot: Decodable, Identifiable {
                 session: session,
                 connected: connectedSessions.contains(session),
                 busy: sessionActivity[session] ?? (worker?.busy == true),
+                needsAttention: sessionAttention[session] == true,
                 workspace: worker?.cwd ?? activeTask?.workspace ?? "",
                 activeTask: activeTask
             )
@@ -213,6 +224,7 @@ struct ConductorTask: Decodable, Identifiable, Hashable {
     let workspace: String
     let senderSession: String?
     let status: String
+    let dispatchState: String?
     let terminalGoalStatus: String?
     let objectivePath: String
     let sentGoalObjective: String
@@ -244,8 +256,17 @@ struct WorkerSummary: Identifiable, Hashable {
     let session: String
     let connected: Bool
     let busy: Bool
+    let needsAttention: Bool
     let workspace: String
     let activeTask: ConductorTask?
+
+    var waitingOnGoal: Bool {
+        connected && activeTask != nil && !dispatchUncertain && !busy && !needsAttention
+    }
+
+    var dispatchUncertain: Bool {
+        activeTask?.dispatchState == "uncertain"
+    }
 }
 
 struct DoctorReport: Decodable {

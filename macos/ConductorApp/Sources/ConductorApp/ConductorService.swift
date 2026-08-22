@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-let conductorSnapshotSchemaVersion = 2
+let conductorSnapshotSchemaVersion = 3
 
 enum ConductorError: LocalizedError {
     case executableMissing
@@ -265,7 +265,8 @@ final class DashboardModel: ObservableObject {
         guard let selectedProject, let selectedWorkerSession else { return nil }
         return selectedProject.workers(
             connectedSessions: Set(snapshot?.tmuxSessions ?? []),
-            sessionActivity: snapshot?.sessionActivity ?? [:]
+            sessionActivity: snapshot?.sessionActivity ?? [:],
+            sessionAttention: snapshot?.sessionAttention ?? [:]
         )
             .first { $0.session == selectedWorkerSession }
     }
@@ -307,7 +308,7 @@ final class DashboardModel: ObservableObject {
             }
             let probe = try conductorDecoder().decode(TmuxSessionSnapshot.self, from: data)
             try validateSnapshotSchema(probe.schemaVersion)
-            if snapshot == nil || snapshot?.tmuxSessions != probe.tmuxSessions || snapshot?.sessionActivity != probe.sessionActivity || snapshot?.tmuxError != probe.tmuxError {
+            if snapshot == nil || snapshot?.tmuxSessions != probe.tmuxSessions || snapshot?.sessionActivity != probe.sessionActivity || snapshot?.sessionAttention != probe.sessionAttention || snapshot?.tmuxError != probe.tmuxError {
                 await refresh()
             }
         } catch {

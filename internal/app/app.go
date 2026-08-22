@@ -53,8 +53,8 @@ func NewForProject(requestedProject string) (*App, error) {
 		return nil, err
 	}
 	tmuxClient := tmux.NewWithGoalDispatchOptions(cfg.TmuxCommand, tmux.GoalDispatchOptions{
-		PrefixDelay:         time.Duration(cfg.GoalPrefixDelayMS) * time.Millisecond,
-		ReplaceProbeTimeout: time.Duration(cfg.GoalReplaceProbeMS) * time.Millisecond,
+		PrefixDelay:     time.Duration(cfg.GoalPrefixDelayMS) * time.Millisecond,
+		DispatchTimeout: time.Duration(cfg.GoalDispatchTimeoutMS) * time.Millisecond,
 	})
 	projectID := strings.TrimSpace(requestedProject)
 	if projectID == "" {
@@ -229,19 +229,65 @@ func (a *App) Delegate(worker, objective string) (*state.Task, error) {
 	}
 
 	if err := a.Tmux.SendGoal(pane.ID, goalObjective); err != nil {
-		_ = a.Store.Update(func(st *state.State) error {
+		dispatchAcknowledged := false
+		dispatchResolved := false
+		stateErr := a.Store.Update(func(st *state.State) error {
 			if current := st.Tasks[task.ID]; current != nil {
-				current.Status = state.TaskFailed
-				current.LastError = err.Error()
+				if current.Status != state.TaskRunning {
+					// A concurrent Stop hook or manual finish already resolved this
+					// task. Never resurrect a terminal lifecycle state from a stale
+					// transport result.
+					dispatchResolved = true
+					return nil
+				}
+				if tmux.IsGoalDispatchUncertain(err) {
+					if current.CodexSessionID != "" {
+						// UserPromptSubmit already proved that Codex accepted a turn
+						// while the pane probe was still waiting.
+						current.Status = state.TaskRunning
+						current.DispatchState = ""
+						current.LastError = ""
+						dispatchAcknowledged = true
+					} else {
+						// Keep status=running for compatibility with 0.4.0 hooks:
+						// they still block retries and associate later lifecycle events.
+						current.Status = state.TaskRunning
+						current.DispatchState = "uncertain"
+						current.LastError = err.Error()
+					}
+				} else {
+					current.Status = state.TaskFailed
+					current.DispatchState = ""
+					current.FinishedAt = a.Now().UTC()
+					current.LastError = err.Error()
+				}
 				current.UpdatedAt = a.Now().UTC()
-				current.FinishedAt = current.UpdatedAt
 			}
-			if workerState := st.Workers[workerSession]; workerState != nil {
-				workerState.Busy = false
+			if !dispatchResolved {
+				workerState := st.Workers[workerSession]
+				if workerState == nil {
+					return nil
+				}
+				if !dispatchAcknowledged {
+					workerState.Busy = false
+				}
 				workerState.UpdatedAt = a.Now().UTC()
 			}
 			return nil
 		})
+		if stateErr != nil {
+			return nil, fmt.Errorf("%w; preserve goal dispatch state: %v", err, stateErr)
+		}
+		if dispatchAcknowledged || dispatchResolved {
+			st, readErr := a.Store.Read()
+			if readErr != nil {
+				return nil, readErr
+			}
+			if current := st.Tasks[task.ID]; current != nil {
+				copyTask := *current
+				return &copyTask, nil
+			}
+		}
 		return nil, err
 	}
 	copyTask := *task
