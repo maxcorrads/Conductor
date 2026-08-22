@@ -6,6 +6,15 @@ Historical entries use the current **Brain** and **Worker** role terminology.
 Session spellings from releases before 0.3 are described as legacy labels because
 0.3 intentionally replaces that namespace instead of migrating it.
 
+## 0.4.3 — 2026-08-22
+
+### Fixed
+
+- Delegating a new goal now preserves a Worker's verified Codex thread binding,
+  so its model and reasoning effort do not temporarily disappear from the Brain
+  setup prompt. The binding is cleared fail-closed when the live pane or tmux
+  session lifetime changed, including when goal dispatch itself fails.
+
 ## 0.4.2 — 2026-08-22
 
 ### Added

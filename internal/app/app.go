@@ -177,6 +177,12 @@ func (a *App) Delegate(worker, objective string) (*state.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	workerSessionCreatedAt := time.Time{}
+	if reader, ok := a.Tmux.(tmuxSessionCreationReader); ok {
+		if created, creationErr := reader.SessionCreatedAt(); creationErr == nil {
+			workerSessionCreatedAt = created[workerSession]
+		}
+	}
 	senderSession, senderPane, _ := a.Tmux.CurrentSession()
 	if senderSession == "" {
 		senderSession = a.BrainSession
@@ -216,7 +222,21 @@ func (a *App) Delegate(worker, objective string) (*state.Task, error) {
 			return fmt.Errorf("%s already has active task %s", workerSession, active.ID)
 		}
 		st.Tasks[task.ID] = task
-		st.Workers[workerSession] = &state.Worker{Session: workerSession, Pane: pane.ID, CWD: pane.Path, Busy: true, UpdatedAt: now}
+		workerState := st.Workers[workerSession]
+		if workerState == nil {
+			workerState = &state.Worker{Session: workerSession}
+			st.Workers[workerSession] = workerState
+		}
+		if !workerBindingMatchesResolvedSession(workerState, pane, workerSessionCreatedAt) {
+			workerState.CodexSessionID = ""
+			workerState.CodexSessionObservedAt = time.Time{}
+			workerState.TmuxSessionCreatedAt = time.Time{}
+		}
+		workerState.Session = workerSession
+		workerState.Pane = pane.ID
+		workerState.CWD = pane.Path
+		workerState.Busy = true
+		workerState.UpdatedAt = now
 		if senderSession == a.BrainSession {
 			st.Brain.Session = senderSession
 			st.Brain.Pane = senderPane
@@ -292,6 +312,12 @@ func (a *App) Delegate(worker, objective string) (*state.Task, error) {
 	}
 	copyTask := *task
 	return &copyTask, nil
+}
+
+func workerBindingMatchesResolvedSession(worker *state.Worker, pane tmux.Pane, sessionCreatedAt time.Time) bool {
+	return worker != nil && worker.CodexSessionID != "" && worker.Pane != "" && worker.Pane == pane.ID &&
+		!worker.CodexSessionObservedAt.IsZero() && !worker.TmuxSessionCreatedAt.IsZero() &&
+		!sessionCreatedAt.IsZero() && worker.TmuxSessionCreatedAt.Equal(sessionCreatedAt)
 }
 
 func newID(prefix string, now time.Time) string {

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-VERSION ?= 0.4.2
+VERSION ?= 0.4.3
 BINARY := conductor
 PKG := ./cmd/conductor
 LDFLAGS := -s -w -X main.version=$(VERSION)

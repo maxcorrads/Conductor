@@ -306,6 +306,112 @@ func TestDelegateSendsExactInlineObjective(t *testing.T) {
 	}
 }
 
+func TestDelegatePreservesObservedWorkerCodexBinding(t *testing.T) {
+	a, _, clock := testApp(t)
+	observedAt := clock.Add(-30 * time.Second)
+	createdAt := clock.Add(-time.Minute)
+	if err := a.Store.Update(func(st *state.State) error {
+		st.Workers["worker-1"] = &state.Worker{
+			Session:                "worker-1",
+			Pane:                   "%2",
+			CodexSessionID:         "worker-thread",
+			CodexSessionObservedAt: observedAt,
+			TmuxSessionCreatedAt:   createdAt,
+			CWD:                    "/repo/worktrees/worker-1",
+			Busy:                   false,
+			UpdatedAt:              observedAt,
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.Delegate("worker-1", "Investigate without losing the current Codex binding."); err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := st.Workers["worker-1"]
+	if worker == nil {
+		t.Fatal("worker state was not recorded")
+	}
+	if worker.CodexSessionID != "worker-thread" || !worker.CodexSessionObservedAt.Equal(observedAt) || !worker.TmuxSessionCreatedAt.Equal(createdAt) {
+		t.Fatalf("delegate discarded current Codex binding: %+v", worker)
+	}
+	if worker.Pane != "%2" || worker.CWD != "/repo/worktrees/worker-1" || !worker.Busy || !worker.UpdatedAt.Equal(clock) {
+		t.Fatalf("delegate did not refresh worker operational state: %+v", worker)
+	}
+}
+
+func TestDelegateClearsWorkerCodexBindingWhenResolvedIdentityChanges(t *testing.T) {
+	tests := []struct {
+		name        string
+		storedPane  string
+		configure   func(*fakeTmux, time.Time)
+		expectError bool
+	}{
+		{
+			name:       "pane changed",
+			storedPane: "%old",
+			configure:  func(_ *fakeTmux, _ time.Time) {},
+		},
+		{
+			name:       "tmux session recreated",
+			storedPane: "%2",
+			configure: func(fake *fakeTmux, clock time.Time) {
+				fake.created["worker-1"] = clock.Add(-10 * time.Second)
+			},
+		},
+		{
+			name:       "pane changed and dispatch failed",
+			storedPane: "%old",
+			configure: func(fake *fakeTmux, _ time.Time) {
+				fake.sendErr = fmt.Errorf("send failed")
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, fake, clock := testApp(t)
+			storedCreatedAt := clock.Add(-time.Minute)
+			tt.configure(fake, clock)
+			if err := a.Store.Update(func(st *state.State) error {
+				st.Workers["worker-1"] = &state.Worker{
+					Session:                "worker-1",
+					Pane:                   tt.storedPane,
+					CodexSessionID:         "stale-worker-thread",
+					CodexSessionObservedAt: clock.Add(-30 * time.Second),
+					TmuxSessionCreatedAt:   storedCreatedAt,
+					CWD:                    "/repo/worktrees/worker-1",
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			_, delegateErr := a.Delegate("worker-1", "Start on the currently resolved Worker.")
+			if (delegateErr != nil) != tt.expectError {
+				t.Fatalf("delegate error = %v, expect error = %t", delegateErr, tt.expectError)
+			}
+			st, err := a.Store.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker := st.Workers["worker-1"]
+			if worker.CodexSessionID != "" || !worker.CodexSessionObservedAt.IsZero() || !worker.TmuxSessionCreatedAt.IsZero() {
+				t.Fatalf("delegate retained stale Codex binding: %+v", worker)
+			}
+			if worker.Pane != "%2" || worker.Busy == tt.expectError || !worker.UpdatedAt.Equal(clock) {
+				t.Fatalf("delegate did not record current Worker state: %+v", worker)
+			}
+		})
+	}
+}
+
 func TestLongGoalUsesPrivateFileReference(t *testing.T) {
 	a, fake, _ := testApp(t)
 	a.Config.InlineGoalMaxChars = 256
