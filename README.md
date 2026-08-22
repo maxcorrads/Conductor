@@ -15,54 +15,38 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
 </p>
 
-Conductor is a tiny, local message bus for **visible Codex CLI sessions** running in real `tmux` terminals.
+---
 
-It lets any number of persistent **Brain** sessions coordinate their own **Worker**
-worker pools without Codex's integrated subagent/spawn mechanism, API billing,
-background polling, or an orchestration model. Each Brain/Worker group is an
-isolated Conductor project.
+Conductor lets any number of persistent **Brain** Codex sessions delegate work to their own **Worker** Codex sessions running in real tmux windows — without subagents, API billing, background polling, or an orchestration model. Goals are pasted into visible terminals, and Worker handoffs come back verbatim. Every Brain/Worker group is an isolated project.
 
 ```text
-Project: project1                           Project: project2
-┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│ tmux: project1--brain             │         │ tmux: project2--brain             │
-│             │                   │         │             │                   │
-│             ├─ project1--worker-1 │         │             ├─ project2--worker-1 │
-│             └─ project1--worker-2 │         │             └─ project2--worker-2 │
-│                                 │         │                                 │
-│ independent FIFO inbox          │         │ independent FIFO inbox          │
-└─────────────────────────────────┘         └─────────────────────────────────┘
+Project: project1                     Project: project2
 
-Inside either Brain terminal the command remains simply:
+  project1--brain                      project2--brain
+        │                                    │
+        ├─ project1--worker-1                ├─ project2--worker-1
+        └─ project1--worker-2                └─ project2--worker-2
 
-    conductor goal worker-1 "..."
+Each project has its own FIFO inbox, busy marker,
+task set, and handoff queue.
 ```
 
-Brain decides what to delegate, how Worker should work, and what kind of final handoff it wants. Conductor does not summarize or constrain the handoff. It forwards Worker's final assistant message verbatim, with only a small envelope identifying the worker, goal status, and workspace.
+Inside any Brain terminal, delegating is one command:
 
-## Design goals
+```bash
+conductor goal worker-1 "..."
+```
 
-- **Minimum token overhead.** No polling turns, no orchestration LLM, no duplicated diffs, and only a tiny transport envelope.
-- **Full visibility.** Goals and handoffs are pasted into real terminal windows that remain under human control.
-- **Freedom of handoff.** Brain can request a commit-oriented response, a detailed technical handoff, research, alternatives, or a file-backed report.
-- **Human control.** Conductor never compacts, restarts, resumes, selects models, manages context, or decides when to ask the human.
-- **Event driven.** Codex lifecycle hooks signal activity and completion; bounded one-shot local recovery replaces recurring polling.
-- **Project isolation.** Every Brain has an independent worker namespace, state
-  file, busy marker, task set, and handoff queue.
+## Why
 
-## What Conductor does not do
+- **Minimum token overhead** — no polling turns, no orchestration LLM, no duplicated diffs, only a tiny transport envelope.
+- **Full visibility** — goals and handoffs are pasted into real terminal windows under human control.
+- **Free-form handoffs** — Brain defines the output contract per goal; Conductor forwards Worker's final response verbatim, never summarized or truncated.
+- **Human control** — Conductor never compacts, restarts, resumes, selects models, or manages context.
+- **Event driven** — Codex lifecycle hooks signal completion; bounded one-shot recovery replaces polling.
+- **Project isolation** — independent namespaces, so activity in one project cannot wake or delay another.
 
-Conductor does **not**:
-
-- create or manage git worktrees;
-- choose Brain/Worker models;
-- manage Codex authentication or subscriptions;
-- compact, clear, restart, or resume a Codex context;
-- use OpenAI APIs;
-- run an LLM of its own;
-- interpret whether a worker's result is good;
-- require commits or a fixed handoff schema;
-- use Codex subagents or `spawn_agent`.
+What Conductor does **not** do: manage git worktrees, choose models, manage Codex auth or subscriptions, use OpenAI APIs, run an LLM of its own, judge results, or use Codex subagents. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 ## Requirements
 
@@ -70,83 +54,70 @@ Conductor does **not**:
 - a recent official Codex CLI with the `goals` and `hooks` features;
 - `tmux`;
 - one visible Codex process per named tmux session;
-- separate worktrees for Worker workers, created and managed by you.
+- separate Worker worktrees, created and managed by you.
 
-Go is needed only to build from source. The release archive includes prebuilt macOS binaries.
-
-The optional native app requires macOS 14 or newer. It includes the CLI and can
-install or update `~/.local/bin/conductor` plus the Codex hooks during first
-launch.
+Go is needed only to build from source; release archives ship prebuilt binaries.
 
 ## Install
 
-Download and extract the archive for the desired version from
-[GitHub Releases](https://github.com/maxcorrads/Conductor/releases). A source
-checkout does not include prebuilt binaries and therefore requires Go 1.22 or
-newer.
+### CLI
 
-From the extracted release directory:
+Download and extract the latest archive from
+[GitHub Releases](https://github.com/maxcorrads/Conductor/releases), then run:
 
 ```bash
 ./scripts/install.sh
 ```
 
-### Native macOS app
+The installer selects the bundled `darwin-arm64`/`darwin-amd64` binary, installs it to `~/.local/bin/conductor`, initializes `~/.conductor`, and merges Conductor's handlers into `~/.codex/hooks.json` (additive, with backup).
 
-Download `Conductor-vX.Y.Z-macos.zip` from the same GitHub Release, move
-`Conductor.app` to Applications, and open it. The notarized universal app runs
-on Apple Silicon and Intel Macs.
+Then enable trust and validate:
 
-On first launch, choose **Install CLI and hooks**. Conductor preserves existing
-Codex hooks and installs its bundled CLI to `~/.local/bin/conductor`. Restart
-Codex sessions, open `/hooks`, inspect the exact commands, and trust them.
+```bash
+codex features enable goals   # only if /goal is missing
+conductor doctor
+```
+
+Make sure `~/.local/bin` is on your `PATH`. Restart Codex sessions after installing or changing hooks, open `/hooks` in each session, inspect the exact commands, and trust them — Codex skips untrusted command hooks.
+
+Options:
+
+```bash
+CONDUCTOR_BIN_DIR="$HOME/bin" ./scripts/install.sh          # custom install dir
+CONDUCTOR_BUILD_FROM_SOURCE=1 ./scripts/install.sh          # build from source
+```
+
+See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walkthrough.
+
+### Native macOS app (GUI)
+
+Download `Conductor-vX.Y.Z-macos.zip` from the same GitHub Release, move `Conductor.app` to Applications, and open it. The notarized universal app runs on Apple Silicon and Intel Macs and requires macOS 14+.
+
+On first launch, choose **Install CLI and hooks**: the app bundles the CLI and installs it to `~/.local/bin/conductor` plus the Codex hooks, preserving existing ones.
 
 The app provides:
 
-- a native project/Brain/Worker dashboard and menu bar status;
+- a native project/Brain/Worker dashboard with menu bar status;
 - exact goal dispatch and handoff inspection;
 - bounded log tails and machine-readable doctor results;
 - `idle`, `flush`, confirmed force-delivery, and confirmed manual finish;
 - project initialization and additive hook management;
-- configurable Terminal/iTerm2 priority for opening or attaching to real tmux
-  sessions;
-- free-form Codex model selection plus model-aware reasoning effort when a new
-  Brain or Worker session is created. It never creates or manages worktrees.
+- configurable Terminal/iTerm2 priority for opening or attaching to tmux sessions;
+- free-form Codex model selection plus model-aware reasoning effort when creating Brain/Worker sessions.
 
-See [`docs/MACOS_APP.md`](docs/MACOS_APP.md) for app behavior, privacy, and
-release signing configuration.
+Details and privacy notes: [`docs/MACOS_APP.md`](docs/MACOS_APP.md).
 
-The installer:
-
-1. selects the bundled `darwin-arm64` or `darwin-amd64` binary;
-2. installs it to `~/.local/bin/conductor` by default;
-3. initializes `~/.conductor`;
-4. merges Conductor's handlers into `~/.codex/hooks.json`, preserving existing hooks and writing a backup before changes.
-
-Current Codex releases enable hooks by default. Enable goals only when `/goal` is missing, then validate the setup:
+The app is driven by the same machine-readable interface available to you on the command line:
 
 ```bash
-codex features enable goals
-conductor doctor
-```
-
-Make sure `~/.local/bin` is on `PATH`. Restart newly opened Codex sessions after installing or changing hooks. In each Codex CLI, open `/hooks`, inspect the exact commands, and trust them; Codex intentionally skips untrusted command hooks.
-
-Custom install directory:
-
-```bash
-CONDUCTOR_BIN_DIR="$HOME/bin" ./scripts/install.sh
-```
-
-Force a local source build instead of using the bundled binary:
-
-```bash
-CONDUCTOR_BUILD_FROM_SOURCE=1 ./scripts/install.sh
+conductor gui snapshot   # full dashboard state: projects, tasks, handoffs, logs (JSON)
+conductor gui sessions   # tmux probe: live sessions, activity and attention flags (JSON)
+conductor gui models     # Codex model catalog with supported reasoning levels (JSON)
 ```
 
 ### Codex permissions
 
-`conductor goal` writes private transport state outside the project and talks to the local tmux socket. Depending on the active Codex permission profile, the first delegation may require approval. For a low-friction ephemeral setup, launch every Brain/Worker terminal with the same temp-backed state directory:
+`conductor goal` writes private transport state outside the project and talks to the local tmux socket. Depending on your Codex permission profile, the first delegation may require approval. For a low-friction ephemeral setup, launch every Brain/Worker terminal with the same temp-backed state directory:
 
 ```bash
 export CONDUCTOR_HOME="${TMPDIR%/}/conductor"
@@ -154,156 +125,60 @@ mkdir -p "$CONDUCTOR_HOME" && chmod 700 "$CONDUCTOR_HOME"
 conductor init
 ```
 
-The state can be discarded after the sessions end. Keep the default `~/.conductor` when you prefer persistent diagnostics and explicitly grant the command the required local permission.
+Keep the default `~/.conductor` if you prefer persistent diagnostics, then explicitly grant the required local permission.
 
-See [`docs/INSTALL.md`](docs/INSTALL.md) for the full walkthrough.
+## Quick start
 
-## Project namespaces
-
-Conductor derives the project from the current tmux session name. A named
-project uses this fixed convention:
-
-```text
-<project>--brain
-<project>--worker-1
-<project>--worker-2
-...
-```
-
-For example, `project1--brain` and `project1--worker-1` belong to project
-`project1`; `project2--brain` and `project2--worker-1` belong to project
-`project2`. The two projects have separate state and queues.
-
-Unprefixed sessions form the `default` project:
-
-```text
-brain
-worker-1
-worker-2
-...
-```
-
-Initialize a named project and inspect its expected sessions with:
+### 1. Initialize the project
 
 ```bash
-conductor project init project1
-conductor project sessions project1
-conductor project list
+conductor project init myproject    # optional; omit for the `default` project
 ```
 
-Project names are normalized to lowercase and may contain letters, numbers,
-and single hyphens. `--` is reserved as the session separator.
+Sessions follow this fixed convention (named projects), keeping routing deterministic without a registry:
 
-## Set up one named project
+```text
+myproject--brain     myproject--worker-1     myproject--worker-2 ...
+```
 
-### 1. Brain
+Unprefixed sessions (`brain`, `worker-1`, ...) belong to the `default` project. Project names are lowercase letters, numbers, and single hyphens; `--` is reserved as separator.
 
-Open a real terminal window in the main workspace:
+### 2. Start the Brain
 
 ```bash
 cd /path/to/project
-tmux new -s project1--brain
+tmux new -s myproject--brain
 codex
 ```
 
-Choose Brain Max through the normal Codex model controls. Conductor does not touch model settings.
-
-Give Brain the protocol once, or put the relevant instructions in your own project instructions:
+Choose the model through normal Codex controls — Conductor never touches model settings. Give Brain the protocol once:
 
 ```bash
-conductor prompt brain
+conductor prompt brain     # also published at prompts/BRAIN.md
 ```
 
-The published prompt is also in [`prompts/BRAIN.md`](prompts/BRAIN.md).
+### 3. Start Workers
 
-### 2. Worker workers
-
-Create worktrees yourself. One possible layout is:
+Create worktrees yourself, one per worker:
 
 ```bash
-git worktree add ../project-worker-1 -b conductor/worker-1
-git worktree add ../project-worker-2 -b conductor/worker-2
-```
-
-Open each worker in a separate real terminal window:
-
-```bash
-cd ../project-worker-1
-tmux new -s project1--worker-1
+git worktree add ../myproject-worker-1 -b conductor/worker-1
+cd ../myproject-worker-1
+tmux new -s myproject--worker-1
 codex
 ```
 
-```bash
-cd ../project-worker-2
-tmux new -s project1--worker-2
-codex
-```
-
-Choose Worker Max in each Codex process. The optional worker protocol is available with:
+Optionally load the worker protocol:
 
 ```bash
-conductor prompt worker
+conductor prompt worker    # also published at prompts/WORKER.md
 ```
 
-Keep one Codex composer/pane per named tmux session. Although the physical
-sessions are `project1--worker-1`, `project1--worker-2`, and so on, Brain still uses
-the short logical aliases `worker-1`, `worker-2`, etc. Conductor adds the project
-namespace locally and does not place it in the delegated goal.
+Keep one Codex composer per named tmux session. Brain uses short logical aliases (`worker-1`); Conductor adds the project namespace locally.
 
-## Run several projects at once
+### 4. Delegate
 
-Create a second independent orchestra with another project name:
-
-```bash
-conductor project init project2
-
-# Window 1
-cd /path/to/project1
-tmux new -s project1--brain
-codex
-
-# Window 2
-cd /path/to/project1-worker-1
-tmux new -s project1--worker-1
-codex
-
-# Window 3
-cd /path/to/project2
-tmux new -s project2--brain
-codex
-
-# Window 4
-cd /path/to/project2-worker-1
-tmux new -s project2--worker-1
-codex
-```
-
-From `project1--brain`:
-
-```bash
-conductor goal worker-1 "Investigate the project1 task."
-```
-
-targets only `project1--worker-1`. The identical command from `project2--brain`
-targets only `project2--worker-1`. A completion in one project wakes only that
-project's Brain.
-
-From a terminal that is not inside one of those tmux sessions, select the
-project explicitly:
-
-```bash
-conductor --project project1 status
-conductor -p project2 inbox
-conductor status --all
-```
-
-To run two independent Brain coordinators against the same repository, use two
-different project IDs, for example `project1-a` and `project1-b`, and give each
-its own worker worktrees.
-
-## Delegate from Brain
-
-The safest form uses stdin, preserving multiline goals and avoiding shell quoting issues:
+The safest form uses stdin (multiline goals, no quoting issues):
 
 ```bash
 cat <<'GOAL' | conductor goal worker-1 --stdin
@@ -317,101 +192,36 @@ In your final response give me a structured handoff containing:
 GOAL
 ```
 
-A short goal can be passed inline:
+Inline works for short goals, and several workers can be delegated in one Brain turn. After delegation Brain should end its turn — no polling needed.
 
-```bash
-conductor goal worker-1 "Run the failing tests, identify the cause, and report the minimum useful handoff."
-```
-
-Delegate to several workers in the same Brain turn:
-
-```bash
-cat task-a.md | conductor goal worker-1 --stdin
-cat task-b.md | conductor goal worker-2 --stdin
-cat task-c.md | conductor goal worker-3 --stdin
-```
-
-After delegation, Brain should end its turn and remain idle. Conductor does not ask Brain to poll the workers.
-
-## Handoffs remain free-form
-
-Brain decides the output contract in each goal.
-
-### Tiny implementation handoff
-
-```text
-Implement the fix and validate it. In the final response include only:
-- commit or worktree state;
-- tests run and result;
-- information I cannot cheaply discover from the worktree.
-```
-
-### Detailed research handoff
-
-```text
-Do not modify code. Return a self-contained technical handoff with evidence,
-alternatives, risks, and a recommended next step.
-```
-
-### File-backed handoff for lower context cost
-
-```text
-Write the full investigation to .conductor/auth-investigation.md in your
-worktree. In the final response give me the conclusion, critical caveats,
-and whether I should read the full file.
-```
-
-Conductor forwards the final response exactly as Worker produced it:
+Handoffs stay free-form; Brain decides the output contract. Worker's final response arrives verbatim:
 
 ```text
 [CONDUCTOR HANDOFF | worker-1 | complete]
-workspace: /absolute/path/to/project-worker-1
+workspace: /absolute/path/to/myproject-worker-1
 
 <verbatim final Worker response>
 ```
 
-The message is not summarized, restructured, truncated, or converted to a mandatory schema.
+More delegation patterns: [`examples/delegate-structured.sh`](examples/delegate-structured.sh) and [`examples/delegate-file-backed.sh`](examples/delegate-file-backed.sh).
 
-## Wake-up and queue behavior
+### Completion detection
 
-Each worker wakes the Brain in its own project as soon as that worker finishes.
+Primary path via supported Codex hooks: Worker receives a real `/goal`, Codex reports `complete` or `blocked` through `update_goal`, `PostToolUse` records it, and the following `Stop` supplies the final assistant message, which Conductor relays to Brain. A bounded transcript/goal-database fallback relays with status `implicit` when a normal turn finished without an observed goal — a signal for Brain to verify, not proof of success. Manual recovery is always available with `conductor finish`. Details: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
-- If Brain is idle, the handoff is pasted after a short safety delay.
-- If Brain is processing another handoff or a human prompt, the new handoff is queued.
-- At the next Brain `Stop`, Conductor reserves the oldest queued handoff and pastes it after a short safety delay.
-- If Brain starts another turn during that delay, the handoff is returned to the queue instead of being injected into the active turn.
-- Remaining handoffs are delivered one at a time after subsequent Brain stops.
-- Busy/idle state and FIFO ordering are scoped per project, so activity in
-  `project1` cannot delay or wake `project2`.
+Long goals above `inline_goal_max_chars` are written privately under the project's task directory; Worker receives a short `/goal` pointing at the absolute file path. Before assigning a worker, Conductor confirms Codex's native **Replace goal?** dialog when a previous persisted goal exists.
 
-There is no recurring timer loop and no model polling. The existing `_deliver` helper waits briefly for an idle Brain composer. After an ambiguous Worker `Stop`, the hook itself waits once, performs one local goal-state check, and returns.
+## Running multiple projects
 
-## How completion is detected
+Each named project is fully isolated — separate state, queues, and wake-ups:
 
-The primary path uses supported Codex hooks:
+```bash
+conductor --project myproject status
+conductor -p otherproject inbox
+conductor status --all
+```
 
-1. Worker receives a real `/goal`.
-2. Codex calls `update_goal` with `complete` or `blocked`.
-3. `PostToolUse` records the confirmed terminal goal status.
-4. The following `Stop` supplies `last_assistant_message`.
-5. Conductor stores that exact message and relays it to Brain.
-
-`blocked` is terminal only from Conductor's transport perspective. Conductor does not interpret the blocker; Brain decides whether to send Worker another goal, investigate, use a different worker, or ask the human.
-
-A transcript/goal-database reader exists as a compatibility fallback. If Worker finishes a normal Codex turn and no goal lifecycle was observed, Conductor waits once and rechecks those local sources. When at least one source was readable and still contains no matching goal, it relays Worker's exact final response with status `implicit`. Any later Worker turn or real goal status cancels the check. `implicit` is a recovery signal for Brain to verify, not proof that the requested goal succeeded.
-
-Conductor never infers completion when no local goal source is available or when a source returns an actual read/query error. Manual recovery remains available with `conductor finish`.
-
-## Long goals
-
-Codex persists `/goal` objectives with a bounded size. Conductor sends goals
-inline only up to the configured safe limit. Longer goals are written privately
-under the selected project's task directory, and Worker receives a short `/goal`
-that points to the absolute file path.
-
-Before assigning a worker, Conductor clears the composer, types the literal `/goal ` prefix, and pastes only the objective. If a previous persisted goal exists, a bounded local pane probe confirms Codex's native **Replace goal?** dialog. This prevents stale blocked/paused goals from trapping the worker while keeping large pastes on Codex's slash-command path. The objective itself is not summarized or rewritten.
-
-This keeps the persisted objective below the Codex limit without discarding the original instructions.
+From outside a recognized tmux session, select the project explicitly as shown above. See [`docs/MULTI_PROJECT.md`](docs/MULTI_PROJECT.md).
 
 ## CLI reference
 
@@ -427,109 +237,46 @@ conductor idle
 conductor hooks install|uninstall|path
 conductor prompt brain|worker
 conductor doctor [--json]
-conductor gui snapshot
+conductor gui snapshot|sessions|models
 conductor project init NAME
-conductor project list
+conductor projects                  # alias for `project list`
 conductor project sessions NAME
 conductor project delete NAME --yes
 conductor version
 ```
 
-`--project NAME` (or `-p NAME`) selects a project explicitly. Inside a
-recognized tmux session it is normally unnecessary because Conductor infers
-the namespace automatically.
+Highlights:
 
-### `goal`
-
-Creates one active local task and sends the exact Brain-authored objective as `/goal <objective>` to the selected Worker pane.
-
-- `--stdin`: read the complete objective from stdin.
-- `--file PATH`: read it from a file.
-
-Conductor does not append a handoff schema or relay instruction. Brain owns the complete worker contract.
-
-Only one active Conductor task is allowed per Worker session.
-
-### `brain setup`
-
-Pastes a setup prompt into the selected project's Brain only after confirming
-from the visible tmux pane that Codex is idle and its composer is empty. The
-command never clears or replaces a draft already present in the composer.
-
-### `status`
-
-Shows the current project's Brain state, recent tasks, workers, errors, and
-pending handoffs. `--json` exposes that project's full local state;
-`--all` shows every initialized project.
-
-### `project`
-
-- `project init NAME` creates isolated state for a named project and prints its
-  session convention;
-- `project list` lists initialized projects and Brain sessions;
-- `project sessions NAME` prints the expected Brain/Worker names without changing
-  agent state;
-- `project delete NAME --yes` removes only a named project's private Conductor
-  runtime data. It refuses the default project and projects with connected tmux
-  sessions, and never removes workspaces or terminal sessions.
-
-### `inbox`
-
-Lists pending handoffs in FIFO order without delivering them.
-
-### `finish`
-
-Manual recovery when a Codex hook was unavailable or missed completion:
-
-```bash
-cat handoff.md | conductor finish worker-1 --stdin --status complete
-```
-
-When no explicit message is provided, Conductor tries the most recently cached assistant message for that active worker task. Passing `--stdin` or `--file` is safer when exact content matters.
-
-### `flush`
-
-Delivers the oldest pending handoff when Brain is idle. `--force` clears Conductor's local Brain-busy marker first; use it only after visually confirming that Brain is at an empty composer.
-
-### `idle`
-
-Resets only Conductor's local Brain activity/reservation state. It never changes Codex context or session state.
-
-### `hooks`
-
-Installs, removes, or prints the user-level Codex hooks file. Installation is additive and backed up. Uninstall removes only Conductor command handlers.
-
-### `doctor`
-
-Checks platform, binaries, feature flags, hook installation, and tmux sessions. It cannot verify hook trust; use `/hooks` inside Codex for that.
+- **`goal`** creates one active local task per Worker and sends the exact objective as `/goal <objective>` to the Worker pane. No schema or relay instruction is appended — Brain owns the full contract.
+- **`brain setup`** pastes a setup prompt into the project's Brain only after confirming the pane is idle with an empty composer; it never clears an existing draft.
+- **`status`** shows Brain state, recent tasks, workers, errors, and pending handoffs (`--json` for machine-readable output, `--all` for every initialized project).
+- **`finish`** is manual recovery when a hook was unavailable: pipe a message or let Conductor reuse the cached last assistant message.
+- **`flush [--force]`** delivers the oldest pending handoff when Brain is idle; `--force` clears the local busy marker first (only after visually confirming Brain is idle).
+- **`idle`** resets only Conductor's local activity/reservation state — never Codex context.
+- **`hooks install|uninstall|path`** manages the user-level `~/.codex/hooks.json`; installation is additive and backed up.
+- **`doctor`** checks platform, binaries, feature flags, hook installation, and tmux sessions. It cannot verify hook trust; use `/hooks` inside Codex.
+- **`project delete NAME --yes`** removes only the project's private runtime data — never workspaces or terminal sessions.
+- **`gui`** emits the JSON snapshots consumed by the native app (schema 3); handy for scripts and dashboards too.
 
 ## Configuration
 
-The generated config is `~/.conductor/config.json` and is shared by all
-projects. See [`config.example.json`](config.example.json).
+Generated at `~/.conductor/config.json`, shared by all projects. Full example: [`config.example.json`](config.example.json).
 
-Important defaults:
+| Key | Default | Valid range | Description |
+|---|---|---|---|
+| `version` | `2` | `2` | Config/state schema version. |
+| `brain_session` | `brain` | non-empty, no `--` | Brain tmux session name for the `default` project. |
+| `worker_session_pattern` | `^worker-[1-9][0-9]*$` | valid regex | Worker session pattern for the `default` project; must not match named-project sessions. |
+| `tmux_command` | `tmux` | non-empty | tmux binary to invoke. |
+| `delivery_delay_ms` | `180` | 0–10000 | Safety delay before pasting into an idle Brain composer. |
+| `goal_prefix_delay_ms` | `75` | 0–10000 | Delay between typing the `/goal ` prefix and pasting the objective. |
+| `goal_dispatch_timeout_ms` | `10000` | 1000–60000 | How long dispatch waits for an observable Codex ack of `/goal`. |
+| `goal_reconcile_delay_ms` | `1500` | 0–60000 | One-shot delayed recheck after an ambiguous worker Stop; cancelled by any later turn. |
+| `inline_goal_max_chars` | `3500` | 256–3900 | Goals up to this size go inline; longer ones are file-backed. |
+| `terminal_goal_statuses` | `["complete", "blocked"]` | non-empty list | Goal statuses treated as terminal. |
+| `transcript_tail_bytes` | `33554432` | ≥ 1048576 | Maximum transcript tail read by the fallback reader. |
 
-```json
-{
-  "brain_session": "brain",
-  "worker_session_pattern": "^worker-[1-9][0-9]*$",
-  "delivery_delay_ms": 180,
-  "inline_goal_max_chars": 3500,
-  "terminal_goal_statuses": ["complete", "blocked"]
-}
-```
-
-`brain_session` and `worker_session_pattern` configure the `default` project.
-Named projects always use `<project>--brain` and
-`<project>--worker-N`, keeping routing deterministic without a registry.
-
-Version 0.3 uses config and state schema 2 for the Brain/Worker protocol. It
-intentionally does not load version 1 runtime data. Before installing 0.3,
-move the previous `~/.conductor` directory aside if you want to retain it as an
-archive, then let `conductor init` create a clean runtime.
-
-`CONDUCTOR_HOME` can relocate all Conductor state for testing or isolation.
+Named projects always use `<project>--brain` and `<project>--worker-N`, regardless of these settings. `CONDUCTOR_HOME` relocates all state for testing or isolation.
 
 ## Local data
 
@@ -540,79 +287,66 @@ By default Conductor writes only under `~/.conductor` and `~/.codex/hooks.json`:
 ├── config.json
 ├── state.json                     # default project
 ├── state.lock
-├── tasks/
-│   └── <task-id>/goal.md
-├── handoffs/
-│   └── <message-id>.md
-├── cache/
-│   └── <task-id>-last-assistant.md
-├── logs/
-│   └── conductor.log
-└── projects/
-    ├── project1/
-    │   ├── state.json
-    │   ├── state.lock
-    │   ├── tasks/
-    │   ├── handoffs/
-    │   ├── cache/
-    │   └── logs/conductor.log
-    └── project2/
-        └── ...
+├── tasks/<task-id>/goal.md
+├── handoffs/<message-id>.md
+├── cache/<task-id>-last-assistant.md
+├── logs/conductor.log
+└── projects/<name>/               # same layout per named project
 ```
 
-Directories use mode `0700`; goal, state, handoff, cache, and log files use mode `0600` where Conductor creates them.
+Directories use mode `0700`; files use `0600` where Conductor creates them.
 
 ## Recovery and troubleshooting
 
 Start with:
 
 ```bash
-conductor doctor
-conductor status
-conductor inbox
+conductor doctor && conductor status && conductor inbox
 ```
 
-Detailed recovery steps are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
-
-Common recovery:
+Common fixes:
 
 ```bash
 # Brain is visually idle, but Conductor believes it is busy
-conductor idle
-conductor flush
+conductor idle && conductor flush
 
 # A worker finished but automatic/implicit recovery was unavailable
 cat final-handoff.md | conductor finish worker-1 --stdin --status complete
 
 # Hooks point to an old binary path
-conductor hooks uninstall
-conductor hooks install
+conductor hooks uninstall && conductor hooks install
 ```
 
-## Security model
+Full guide: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
-Conductor has no network client and no OpenAI API integration. It does execute through trusted Codex command hooks and paste model-authored text into another trusted local Codex session. Review [`docs/SECURITY.md`](docs/SECURITY.md) before using it with untrusted repositories or sensitive data.
+## Security
+
+Conductor has no network client and no OpenAI API integration. It executes through trusted Codex command hooks and pastes model-authored text into another trusted local Codex session. Review [`docs/SECURITY.md`](docs/SECURITY.md) before using it with untrusted repositories or sensitive data.
 
 ## Development
 
 ```bash
-make test
-make vet
-make race
-make build
-make dist
-make package
+make test       # unit tests
+make vet        # go vet
+make race       # tests with race detector
+make fmt-check  # gofmt check
+make build      # local binary in build/
+make dist       # darwin arm64+amd64 binaries in dist/
+make release    # everything above plus packaging checks
 ```
 
-The project is intentionally dependency-free beyond the Go standard library.
+The project is intentionally dependency-free beyond the Go standard library. Contributing guidelines: [`CONTRIBUTING.md`](CONTRIBUTING.md). Changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
-See:
+## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- [`docs/MULTI_PROJECT.md`](docs/MULTI_PROJECT.md)
-- [`docs/PROTOCOL.md`](docs/PROTOCOL.md)
-- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)
-- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [`docs/INSTALL.md`](docs/INSTALL.md) — full installation walkthrough
+- [`docs/MACOS_APP.md`](docs/MACOS_APP.md) — native app behavior and signing
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — internal design
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — Brain/Worker protocol and completion detection
+- [`docs/MULTI_PROJECT.md`](docs/MULTI_PROJECT.md) — multi-project isolation
+- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) — Codex compatibility matrix
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — recovery guide
+- [`docs/SECURITY.md`](docs/SECURITY.md) — security model
 
 ## License
 

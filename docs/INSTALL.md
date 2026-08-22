@@ -101,27 +101,6 @@ For a second simultaneous project, repeat with another prefix such as
 `project2--brain` and `project2--worker-1`. See
 [`MULTI_PROJECT.md`](MULTI_PROJECT.md).
 
-## Upgrade
-
-Version 0.3 is a clean protocol reset and does not migrate version 1 runtime
-data. Before running the installer, move the previous Conductor home aside so
-the operation starts from an empty path:
-
-```bash
-mv "${CONDUCTOR_HOME:-$HOME/.conductor}" \
-  "${CONDUCTOR_HOME:-$HOME/.conductor}.pre-0.3-$(date +%Y%m%d-%H%M%S)"
-./scripts/install.sh
-```
-
-The installer refuses to replace the current binary when it detects version 1
-configuration or state, preventing a partial upgrade. It then installs the new
-binary, initializes schema 2, and updates the hook definitions. Review `/hooks`
-again if Codex marks the changed definition untrusted.
-
-The installer also compares semantic versions before replacement. An equal or
-newer installed CLI is kept; invalid or incomparable version output stops the
-operation without changing the installed binary.
-
 ## Uninstall
 
 Preserve local task/handoff state:

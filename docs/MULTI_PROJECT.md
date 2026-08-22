@@ -1,12 +1,12 @@
 # Multiple projects and multiple Brain sessions
 
-Conductor 0.3 scopes every Brain and Worker pool to a **project ID**.
+Conductor scopes every Brain and Worker pool to a **project ID**.
 A project is a transport namespace, not a Codex concept and not necessarily a
 single Git repository.
 
 ## Session naming
 
-The backwards-compatible default project remains:
+The default project uses unprefixed sessions:
 
 ```text
 brain
@@ -152,7 +152,7 @@ activity; separate Brain worktrees are safer if both may edit.
 
 ## State layout
 
-The default project keeps the 0.1 layout. Named projects are isolated below
+The default project lives at the top level. Named projects are isolated below
 `projects/`:
 
 ```text
@@ -177,13 +177,6 @@ The default project keeps the 0.1 layout. Named projects are isolated below
 The hook configuration remains global. Every hook event is routed to the
 owning project from its tmux session; if tmux context is unavailable,
 Conductor falls back to recorded Codex session IDs and workspaces.
-
-## Clean 0.3 runtime
-
-The Brain/Worker protocol uses config and state schema 2. Version 1 runtime data
-is rejected instead of being guessed or partially migrated. Move the previous
-`~/.conductor` directory aside before installation, then initialize a clean
-default project and any named projects you need.
 
 ## Current boundary
 
