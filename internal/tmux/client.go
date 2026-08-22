@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -154,6 +155,68 @@ func (c *ExecClient) ListSessions() ([]string, error) {
 		}
 	}
 	return sessions, nil
+}
+
+// SessionCreatedAt returns tmux's creation timestamp for every live session.
+// GUI metadata uses it to reject a persisted Codex thread binding left behind
+// when a session name is destroyed and later reused.
+func (c *ExecClient) SessionCreatedAt() (map[string]time.Time, error) {
+	out, err := exec.Command(c.Bin, "list-sessions", "-F", "#{session_name}\t#{session_created}").CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "no server running") || strings.Contains(string(out), "failed to connect") {
+			return map[string]time.Time{}, nil
+		}
+		return nil, fmt.Errorf("list tmux session creation times: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	created := map[string]time.Time{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+			continue
+		}
+		seconds, parseErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		if parseErr != nil || seconds <= 0 {
+			continue
+		}
+		created[strings.TrimSpace(parts[0])] = time.Unix(seconds, 0)
+	}
+	return created, nil
+}
+
+// SessionPanes returns the current window's active pane identity for each live
+// session using one tmux query. pane_active is window-local, so window_active
+// must also be considered when a session has multiple windows.
+func (c *ExecClient) SessionPanes() (map[string]Pane, error) {
+	out, err := exec.Command(c.Bin, "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{window_active}\t#{pane_active}\t#{pane_current_path}\t#{pane_current_command}").CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "no server running") || strings.Contains(string(out), "failed to connect") {
+			return map[string]Pane{}, nil
+		}
+		return nil, fmt.Errorf("list tmux session panes: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	panes := map[string]Pane{}
+	priorities := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "\t", 6)
+		if len(parts) != 6 || strings.TrimSpace(parts[1]) == "" {
+			continue
+		}
+		session := strings.TrimSpace(parts[1])
+		windowActive := strings.TrimSpace(parts[2]) == "1"
+		paneActive := strings.TrimSpace(parts[3]) == "1"
+		priority := 0
+		if paneActive {
+			priority = 1
+		}
+		if windowActive && paneActive {
+			priority = 2
+		}
+		if _, found := panes[session]; !found || priority > priorities[session] {
+			panes[session] = Pane{ID: parts[0], Session: session, Active: windowActive && paneActive, Path: parts[4], Command: parts[5]}
+			priorities[session] = priority
+		}
+	}
+	return panes, nil
 }
 
 func (c *ExecClient) SendPrompt(targetPane string, prompt string) error {

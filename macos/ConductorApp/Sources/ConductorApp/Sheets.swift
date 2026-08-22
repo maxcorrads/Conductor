@@ -132,10 +132,19 @@ struct BrainSetupSheet: View {
                 Spacer()
                 Button("Close", role: .cancel) { dismiss() }
                 Button(copied ? "Copied" : "Copy prompt", systemImage: copied ? "checkmark" : "doc.on.doc") {
-                    copyPrompt()
+                    Task {
+                        guard let currentPrompt = await refreshedBrainSetupPrompt(
+                            refresh: { await model.refreshForAction() },
+                            prompt: { prompt }
+                        ) else { return }
+                        copyPrompt(currentPrompt)
+                    }
                 }
                 Button("Send to Brain…", systemImage: "paperplane") {
-                    confirmSend = true
+                    Task {
+                        guard await model.refreshForAction() else { return }
+                        confirmSend = true
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canSend)
@@ -146,13 +155,20 @@ struct BrainSetupSheet: View {
         .confirmationDialog("Send setup prompt to Brain?", isPresented: $confirmSend, titleVisibility: .visible) {
             Button("Send prompt") {
                 Task {
-                    await model.sendBrainSetup(projectID: projectID, prompt: prompt)
+                    guard let currentPrompt = await refreshedBrainSetupPrompt(
+                        refresh: { await model.refreshForAction() },
+                        prompt: { prompt }
+                    ) else { return }
+                    await model.sendBrainSetup(projectID: projectID, prompt: currentPrompt)
                     if model.lastError == nil { dismiss() }
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Conductor will recheck that \(project?.brainSession ?? "the Brain") is idle and its composer is empty before sending anything.")
+        }
+        .task {
+            _ = await model.refreshForAction()
         }
     }
 
@@ -163,7 +179,8 @@ struct BrainSetupSheet: View {
     private var prompt: String {
         project?.brainSetupPrompt(
             connectedSessions: Set(model.snapshot?.tmuxSessions ?? []),
-            sessionActivity: model.snapshot?.sessionActivity ?? [:]
+            sessionActivity: model.snapshot?.sessionActivity ?? [:],
+            sessionProfiles: model.snapshot?.sessionProfiles ?? [:]
         ) ?? ""
     }
 
@@ -185,10 +202,10 @@ struct BrainSetupSheet: View {
         return "Brain is connected and idle. Its empty composer will be verified again before sending."
     }
 
-    private func copyPrompt() {
+    private func copyPrompt(_ value: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(prompt, forType: .string)
+        pasteboard.setString(value, forType: .string)
         copied = true
     }
 }

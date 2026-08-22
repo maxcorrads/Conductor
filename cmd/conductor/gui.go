@@ -18,27 +18,34 @@ import (
 	"github.com/maxcorrads/conductor/internal/project"
 	"github.com/maxcorrads/conductor/internal/state"
 	"github.com/maxcorrads/conductor/internal/tmux"
+	"github.com/maxcorrads/conductor/internal/transcript"
 )
 
 const (
-	guiSnapshotSchemaVersion = 3
+	guiSnapshotSchemaVersion = 4
 	guiMaxRecentRecords      = 100
 	guiMaxSelectedRecords    = 200
 	guiMaxTotalTextBytes     = 16 * 1024 * 1024
 )
 
 type guiSnapshot struct {
-	SchemaVersion    int                  `json:"schema_version"`
-	ConductorVersion string               `json:"conductor_version"`
-	GeneratedAt      time.Time            `json:"generated_at"`
-	ConductorHome    string               `json:"conductor_home"`
-	Executable       string               `json:"executable"`
-	TmuxExecutable   string               `json:"tmux_executable"`
-	TmuxSessions     []string             `json:"tmux_sessions"`
-	SessionActivity  map[string]bool      `json:"session_activity"`
-	SessionAttention map[string]bool      `json:"session_attention"`
-	TmuxError        string               `json:"tmux_error,omitempty"`
-	Projects         []guiProjectSnapshot `json:"projects"`
+	SchemaVersion    int                          `json:"schema_version"`
+	ConductorVersion string                       `json:"conductor_version"`
+	GeneratedAt      time.Time                    `json:"generated_at"`
+	ConductorHome    string                       `json:"conductor_home"`
+	Executable       string                       `json:"executable"`
+	TmuxExecutable   string                       `json:"tmux_executable"`
+	TmuxSessions     []string                     `json:"tmux_sessions"`
+	SessionActivity  map[string]bool              `json:"session_activity"`
+	SessionAttention map[string]bool              `json:"session_attention"`
+	SessionProfiles  map[string]guiSessionProfile `json:"session_profiles"`
+	TmuxError        string                       `json:"tmux_error,omitempty"`
+	Projects         []guiProjectSnapshot         `json:"projects"`
+}
+
+type guiSessionProfile struct {
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
 }
 
 type guiSessionSnapshot struct {
@@ -254,8 +261,12 @@ func buildGUISnapshot() (guiSnapshot, error) {
 		TmuxSessions:     []string{},
 		SessionActivity:  map[string]bool{},
 		SessionAttention: map[string]bool{},
+		SessionProfiles:  map[string]guiSessionProfile{},
 		Projects:         make([]guiProjectSnapshot, 0, len(ids)),
 	}
+	sessionCodexIDs := map[string]string{}
+	sessionCreatedAt := map[string]time.Time{}
+	sessionPanes := map[string]tmux.Pane{}
 	projectTextBudget := int64(guiMaxTotalTextBytes)
 	if len(ids) > 0 {
 		projectTextBudget /= int64(len(ids))
@@ -278,6 +289,14 @@ func buildGUISnapshot() (guiSnapshot, error) {
 			} else {
 				sort.Strings(sessions)
 				snapshot.TmuxSessions = sessions
+				if execTmux, ok := projectApp.Tmux.(*tmux.ExecClient); ok {
+					if created, createdErr := execTmux.SessionCreatedAt(); createdErr == nil {
+						sessionCreatedAt = created
+					}
+					if panes, panesErr := execTmux.SessionPanes(); panesErr == nil {
+						sessionPanes = panes
+					}
+				}
 				snapshot.SessionActivity, snapshot.SessionAttention = detectSessionSignals(
 					projectApp.Config.TmuxCommand,
 					conductorSessions(sessions, projectApp.Config),
@@ -287,6 +306,21 @@ func buildGUISnapshot() (guiSnapshot, error) {
 		st, readErr := projectApp.Store.Read()
 		if readErr != nil {
 			return guiSnapshot{}, readErr
+		}
+		if st.Brain.CodexSessionID != "" {
+			brainPane := sessionPanes[projectApp.BrainSession]
+			if sessionProfileBindingIsCurrent(projectApp.BrainSession, st.Brain.Pane, brainPane, st.Brain.CodexSessionObservedAt, st.Brain.TmuxSessionCreatedAt, sessionCreatedAt) {
+				sessionCodexIDs[projectApp.BrainSession] = st.Brain.CodexSessionID
+			}
+		}
+		for session, worker := range st.Workers {
+			if worker == nil || worker.CodexSessionID == "" {
+				continue
+			}
+			workerPane := sessionPanes[session]
+			if sessionProfileBindingIsCurrent(session, worker.Pane, workerPane, worker.CodexSessionObservedAt, worker.TmuxSessionCreatedAt, sessionCreatedAt) {
+				sessionCodexIDs[session] = worker.CodexSessionID
+			}
 		}
 		tasks := make([]*state.Task, 0, len(st.Tasks))
 		for _, task := range st.Tasks {
@@ -356,7 +390,38 @@ func buildGUISnapshot() (guiSnapshot, error) {
 		populateProjectText(&projectSnapshot, selectedTasks, selectedDeliveries, projectApp.Paths.Log, projectTextBudget)
 		snapshot.Projects = append(snapshot.Projects, projectSnapshot)
 	}
+	threadIDs := make([]string, 0, len(sessionCodexIDs))
+	for _, threadID := range sessionCodexIDs {
+		threadIDs = append(threadIDs, threadID)
+	}
+	if profiles, _, profileErr := transcript.SessionProfilesFromSQLiteChecked(threadIDs); profileErr == nil {
+		for session, threadID := range sessionCodexIDs {
+			if profile, found := profiles[threadID]; found {
+				snapshot.SessionProfiles[session] = guiSessionProfile{Model: profile.Model, Effort: profile.Effort}
+			}
+		}
+	}
 	return snapshot, nil
+}
+
+func sessionBindingIsCurrent(session string, bindingObservedAt time.Time, sessionCreatedAt map[string]time.Time) bool {
+	createdAt, found := sessionCreatedAt[session]
+	return found && !bindingObservedAt.IsZero() && !bindingObservedAt.Before(createdAt)
+}
+
+func sessionProfileBindingIsCurrent(session, storedPane string, livePane tmux.Pane, bindingObservedAt, bindingSessionCreatedAt time.Time, sessionCreatedAt map[string]time.Time) bool {
+	if !sessionBindingIsCurrent(session, bindingObservedAt, sessionCreatedAt) {
+		return false
+	}
+	liveCreatedAt, found := sessionCreatedAt[session]
+	if !found || bindingSessionCreatedAt.IsZero() || !bindingSessionCreatedAt.Equal(liveCreatedAt) || storedPane == "" || livePane.ID != storedPane {
+		return false
+	}
+	command := strings.ToLower(strings.TrimSpace(livePane.Command))
+	if slash := strings.LastIndex(command, "/"); slash >= 0 {
+		command = command[slash+1:]
+	}
+	return command == "codex" || strings.HasPrefix(command, "codex-")
 }
 
 func detectSessionSignals(tmuxCommand string, sessions []string) (map[string]bool, map[string]bool) {
@@ -579,6 +644,9 @@ func (snapshot *guiSnapshot) normalizeCollections() {
 	}
 	if snapshot.SessionAttention == nil {
 		snapshot.SessionAttention = map[string]bool{}
+	}
+	if snapshot.SessionProfiles == nil {
+		snapshot.SessionProfiles = map[string]guiSessionProfile{}
 	}
 	if snapshot.Projects == nil {
 		snapshot.Projects = []guiProjectSnapshot{}

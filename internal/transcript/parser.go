@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,6 +22,11 @@ type GoalEvent struct {
 	ThreadID  string
 	Timestamp time.Time
 	Source    string
+}
+
+type SessionProfile struct {
+	Model  string
+	Effort string
 }
 
 // LatestGoalEvent reads only the tail of a Codex JSONL transcript. The transcript
@@ -167,7 +174,7 @@ func GoalStatusFromSQLiteChecked(sessionID string) (GoalEvent, bool, bool, error
 			continue
 		}
 		checked = true
-		out, err := exec.Command(sqlite, "-noheader", db, query).CombinedOutput()
+		out, err := exec.Command(sqlite, "-readonly", "-noheader", db, query).CombinedOutput()
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %s", filepath.Base(db), strings.TrimSpace(string(out))))
 			continue
@@ -187,6 +194,101 @@ func GoalStatusFromSQLiteChecked(sessionID string) (GoalEvent, bool, bool, error
 		return GoalEvent{}, false, checked, errors.New(strings.Join(errs, "; "))
 	}
 	return GoalEvent{}, false, checked, nil
+}
+
+// SessionProfilesFromSQLiteChecked reads Codex's current model selection for
+// known thread ids. The local database is not a stable Codex API, so callers
+// must treat unavailable columns, databases, or sqlite as missing metadata.
+func SessionProfilesFromSQLiteChecked(sessionIDs []string) (map[string]SessionProfile, bool, error) {
+	profiles := map[string]SessionProfile{}
+	unique := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			continue
+		}
+		if _, exists := seen[sessionID]; exists {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		unique = append(unique, sessionID)
+	}
+	if len(unique) == 0 {
+		return profiles, false, nil
+	}
+
+	sqlite, err := exec.LookPath("sqlite3")
+	if err != nil {
+		return profiles, false, nil
+	}
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return profiles, false, homeErr
+		}
+		codexHome = filepath.Join(home, ".codex")
+	}
+
+	quoted := make([]string, 0, len(unique))
+	for _, sessionID := range unique {
+		quoted = append(quoted, "'"+sqlQuote(sessionID)+"'")
+	}
+	query := "PRAGMA query_only=ON; PRAGMA busy_timeout=100; " +
+		"SELECT id || char(9) || COALESCE(model,'') || char(9) || COALESCE(reasoning_effort,'') " +
+		"FROM threads WHERE id IN (" + strings.Join(quoted, ",") + ");"
+	type stateDatabase struct {
+		path    string
+		version int
+	}
+	matches, globErr := filepath.Glob(filepath.Join(codexHome, "state_*.sqlite"))
+	if globErr != nil {
+		return profiles, false, globErr
+	}
+	candidates := make([]stateDatabase, 0, len(matches))
+	for _, match := range matches {
+		base := filepath.Base(match)
+		rawVersion := strings.TrimSuffix(strings.TrimPrefix(base, "state_"), ".sqlite")
+		version, parseErr := strconv.Atoi(rawVersion)
+		if parseErr == nil && version > 0 {
+			candidates = append(candidates, stateDatabase{path: match, version: version})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].version > candidates[j].version })
+	checked := false
+	for _, candidate := range candidates {
+		if _, statErr := os.Stat(candidate.path); statErr != nil {
+			continue
+		}
+		checked = true
+		out, commandErr := exec.Command(sqlite, "-readonly", "-noheader", candidate.path, query).CombinedOutput()
+		if commandErr != nil {
+			return profiles, true, fmt.Errorf("%s: %s", filepath.Base(candidate.path), strings.TrimSpace(string(out)))
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, "\t", 3)
+			if len(parts) != 3 {
+				continue
+			}
+			threadID := strings.TrimSpace(parts[0])
+			if _, requested := seen[threadID]; !requested {
+				continue
+			}
+			profile := SessionProfile{
+				Model:  strings.TrimSpace(parts[1]),
+				Effort: strings.TrimSpace(parts[2]),
+			}
+			if profile.Model != "" || profile.Effort != "" {
+				profiles[threadID] = profile
+			}
+		}
+		return profiles, true, nil
+	}
+	return profiles, checked, nil
 }
 
 func readTailLines(path string, maxBytes int64) ([][]byte, error) {

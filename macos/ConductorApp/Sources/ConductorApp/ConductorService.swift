@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-let conductorSnapshotSchemaVersion = 3
+let conductorSnapshotSchemaVersion = 4
 
 enum ConductorError: LocalizedError {
     case executableMissing
@@ -70,6 +70,7 @@ final class RefreshCoalescer {
     func run(_ operation: () async -> Void) async {
         if running {
             pending = true
+            while running { await Task.yield() }
             return
         }
         running = true
@@ -79,6 +80,15 @@ final class RefreshCoalescer {
         } while pending
         running = false
     }
+}
+
+@MainActor
+func refreshedBrainSetupPrompt(
+    refresh: () async -> Bool,
+    prompt: () -> String
+) async -> String? {
+    guard await refresh() else { return nil }
+    return prompt()
 }
 
 @MainActor
@@ -255,6 +265,7 @@ final class DashboardModel: ObservableObject {
     private var refreshDebounce: Task<Void, Never>?
     private var sessionMonitor: Task<Void, Never>?
     private var started = false
+    private var lastRefreshSucceeded = false
 
     var selectedProject: ProjectSnapshot? {
         guard let selectedProjectID else { return snapshot?.projects.first }
@@ -319,8 +330,14 @@ final class DashboardModel: ObservableObject {
 
     func refresh() async {
         await refreshCoalescer.run { [weak self] in
-            await self?.performRefresh()
+            guard let self else { return }
+            self.lastRefreshSucceeded = await self.performRefresh()
         }
+    }
+
+    func refreshForAction() async -> Bool {
+        await refresh()
+        return lastRefreshSucceeded
     }
 
     func loadModelCatalog() async {
@@ -336,7 +353,7 @@ final class DashboardModel: ObservableObject {
         }
     }
 
-    private func performRefresh() async {
+    private func performRefresh() async -> Bool {
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -352,8 +369,11 @@ final class DashboardModel: ObservableObject {
                 selectedProjectID = decoded.projects.first?.id
             }
             updateWatchers(decoded)
+            lastError = nil
+            return true
         } catch {
             lastError = error.localizedDescription
+            return false
         }
     }
 

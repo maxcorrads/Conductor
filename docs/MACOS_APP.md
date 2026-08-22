@@ -91,9 +91,20 @@ The Worker launch sheet starts with the Brain's last recorded workspace. The
 user can still choose a different directory before opening the real terminal.
 
 The Brain menu exposes a generated setup prompt containing the project,
-Brain/workspace identity, connected Workers, and Conductor delegation rules.
-It can be copied at any time. Direct send requires confirmation, a connected
-idle Brain, and a final CLI check that the Codex composer is empty.
+Brain/workspace identity, connected Workers, their current Codex model and
+reasoning effort when reported, and the Conductor delegation rules. Current
+session metadata is read from Codex's local thread state using the session id
+already learned from hooks; unavailable values are rendered as **not reported
+by Codex**. Conductor refreshes this metadata when the sheet opens and again
+immediately before copy or send, so a model or effort change in an otherwise
+idle session does not leave the prompt on the periodic session probe's cached
+snapshot. A hook observation must also be newer than the current tmux session;
+legacy state without that observation remains unavailable until the next hook,
+and a session whose active pane no longer runs Codex has no current profile.
+The prompt can be copied at any time. Direct send requires
+confirmation, a connected idle Brain, and a final CLI check that the Codex
+composer is empty. Copy and send both stop without using the cached prompt if
+their just-in-time snapshot refresh fails.
 
 Brain and Worker cards also provide **Focus terminal**, which only raises an
 already-open matching Terminal or iTerm2 window. It never opens a fallback

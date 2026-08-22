@@ -37,9 +37,14 @@ const (
 )
 
 type resolvedRole struct {
-	Kind    roleKind
-	Session string
-	Pane    string
+	Kind                 roleKind
+	Session              string
+	Pane                 string
+	TmuxSessionCreatedAt time.Time
+}
+
+type tmuxSessionCreationReader interface {
+	SessionCreatedAt() (map[string]time.Time, error)
 }
 
 func DecodeHookInput(data []byte) (HookInput, error) {
@@ -52,6 +57,15 @@ func DecodeHookInput(data []byte) (HookInput, error) {
 
 func (a *App) HandleHook(kind string, input HookInput) error {
 	role := a.resolveRole(input)
+	observesSession := kind == "session-start" || kind == "user-prompt-submit" || kind == "stop" ||
+		(kind == "post-tool-use" && role.Kind == roleWorker && input.ToolName == "update_goal")
+	if role.Session != "" && observesSession {
+		if reader, ok := a.Tmux.(tmuxSessionCreationReader); ok {
+			if created, err := reader.SessionCreatedAt(); err == nil {
+				role.TmuxSessionCreatedAt = created[role.Session]
+			}
+		}
+	}
 	switch kind {
 	case "session-start":
 		return a.handleSessionStart(role, input)
@@ -117,7 +131,7 @@ func (a *App) handlePostToolUse(role resolvedRole, input HookInput) error {
 			st.Workers[role.Session] = worker
 		}
 		worker.Pane = role.Pane
-		worker.CodexSessionID = input.SessionID
+		observeWorkerCodexSession(worker, input.SessionID, now, role.TmuxSessionCreatedAt)
 		worker.CWD = input.CWD
 		worker.Busy = true
 		worker.UpdatedAt = now
@@ -231,7 +245,7 @@ func (a *App) handleSessionStart(role resolvedRole, input HookInput) error {
 		case roleBrain:
 			st.Brain.Session = role.Session
 			st.Brain.Pane = role.Pane
-			st.Brain.CodexSessionID = input.SessionID
+			observeBrainCodexSession(&st.Brain, input.SessionID, now, role.TmuxSessionCreatedAt)
 			st.Brain.CWD = input.CWD
 			st.Brain.Busy = false
 			st.Brain.UpdatedAt = now
@@ -242,7 +256,7 @@ func (a *App) handleSessionStart(role resolvedRole, input HookInput) error {
 				st.Workers[role.Session] = worker
 			}
 			worker.Pane = role.Pane
-			worker.CodexSessionID = input.SessionID
+			observeWorkerCodexSession(worker, input.SessionID, now, role.TmuxSessionCreatedAt)
 			worker.CWD = input.CWD
 			worker.Busy = false
 			worker.UpdatedAt = now
@@ -258,7 +272,7 @@ func (a *App) handlePromptSubmit(role resolvedRole, input HookInput) error {
 		case roleBrain:
 			st.Brain.Session = role.Session
 			st.Brain.Pane = role.Pane
-			st.Brain.CodexSessionID = input.SessionID
+			observeBrainCodexSession(&st.Brain, input.SessionID, now, role.TmuxSessionCreatedAt)
 			st.Brain.CWD = input.CWD
 			st.Brain.Busy = true
 			st.Brain.TurnID = input.TurnID
@@ -270,7 +284,7 @@ func (a *App) handlePromptSubmit(role resolvedRole, input HookInput) error {
 				st.Workers[role.Session] = worker
 			}
 			worker.Pane = role.Pane
-			worker.CodexSessionID = input.SessionID
+			observeWorkerCodexSession(worker, input.SessionID, now, role.TmuxSessionCreatedAt)
 			worker.CWD = input.CWD
 			worker.Busy = true
 			worker.UpdatedAt = now
@@ -310,7 +324,7 @@ func (a *App) handleBrainStop(role resolvedRole, input HookInput) error {
 		}
 		st.Brain.Session = role.Session
 		st.Brain.Pane = role.Pane
-		st.Brain.CodexSessionID = input.SessionID
+		observeBrainCodexSession(&st.Brain, input.SessionID, now, role.TmuxSessionCreatedAt)
 		st.Brain.CWD = input.CWD
 		st.Brain.Busy = false
 		st.Brain.TurnID = ""
@@ -347,6 +361,9 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 	if task == nil {
 		return a.Store.Update(func(st *state.State) error {
 			if worker := st.Workers[role.Session]; worker != nil {
+				worker.Pane = role.Pane
+				observeWorkerCodexSession(worker, input.SessionID, now, role.TmuxSessionCreatedAt)
+				worker.CWD = input.CWD
 				worker.Busy = false
 				worker.UpdatedAt = now
 			}
@@ -470,7 +487,7 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 			st.Workers[role.Session] = worker
 		}
 		worker.Pane = role.Pane
-		worker.CodexSessionID = input.SessionID
+		observeWorkerCodexSession(worker, input.SessionID, now, role.TmuxSessionCreatedAt)
 		worker.CWD = input.CWD
 		worker.Busy = false
 		worker.UpdatedAt = now
@@ -484,6 +501,24 @@ func (a *App) handleWorkerStop(role resolvedRole, input HookInput) error {
 		return a.ReconcileTask(task.ID, reconcileToken, delay)
 	}
 	return nil
+}
+
+func observeBrainCodexSession(activity *state.Activity, sessionID string, observedAt, tmuxSessionCreatedAt time.Time) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	activity.CodexSessionID = sessionID
+	activity.CodexSessionObservedAt = observedAt
+	activity.TmuxSessionCreatedAt = tmuxSessionCreatedAt
+}
+
+func observeWorkerCodexSession(worker *state.Worker, sessionID string, observedAt, tmuxSessionCreatedAt time.Time) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	worker.CodexSessionID = sessionID
+	worker.CodexSessionObservedAt = observedAt
+	worker.TmuxSessionCreatedAt = tmuxSessionCreatedAt
 }
 
 func (a *App) isTerminalGoalStatus(status string) bool {

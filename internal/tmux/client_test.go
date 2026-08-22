@@ -47,6 +47,52 @@ esac
 	}
 }
 
+func TestExecClientReadsSessionCreationTimes(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "tmux")
+	body := `#!/bin/sh
+case "$1" in
+  list-sessions) printf 'demo--brain\t1787392800\ndemo--worker-1\t1787392810\ninvalid\tnot-a-time\n' ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	created, err := New(script).SessionCreatedAt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := created["demo--brain"]; !got.Equal(time.Unix(1787392800, 0)) {
+		t.Fatalf("Brain creation time = %v", got)
+	}
+	if got := created["demo--worker-1"]; !got.Equal(time.Unix(1787392810, 0)) {
+		t.Fatalf("Worker creation time = %v", got)
+	}
+	if _, accepted := created["invalid"]; accepted {
+		t.Fatal("invalid tmux creation time was accepted")
+	}
+}
+
+func TestExecClientReadsActiveSessionPanesInOneQuery(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "tmux")
+	body := `#!/bin/sh
+case "$1" in
+  list-panes) printf '%%1\tdemo--brain\t0\t1\t/old\tcodex\n%%2\tdemo--brain\t1\t1\t/repo\tzsh\n%%3\tdemo--worker-1\t1\t1\t/worktree\tcodex-aarch64-apple-darwin\n' ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	panes, err := New(script).SessionPanes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if panes["demo--brain"].ID != "%2" || panes["demo--brain"].Command != "zsh" || panes["demo--worker-1"].Command != "codex-aarch64-apple-darwin" {
+		t.Fatalf("session panes = %+v", panes)
+	}
+}
+
 func TestExecClientSendsGoalPrefixSeparatelyFromPastedObjective(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "tmux")

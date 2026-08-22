@@ -13,6 +13,7 @@ import (
 
 	"github.com/maxcorrads/conductor/internal/config"
 	"github.com/maxcorrads/conductor/internal/state"
+	"github.com/maxcorrads/conductor/internal/tmux"
 )
 
 func TestParseGlobalProjectOption(t *testing.T) {
@@ -67,6 +68,36 @@ func TestGUIWorkerSessionTemplateSupportsNamedProjectsWithCustomDefaultPattern(t
 	}
 	if got := guiWorkerSessionTemplate("chapter", customPattern); got != "chapter--worker-%d" {
 		t.Fatalf("named project template = %q", got)
+	}
+}
+
+func TestGUISessionProfileRejectsBindingFromReusedTmuxName(t *testing.T) {
+	created := time.Date(2026, 8, 22, 18, 0, 0, 0, time.UTC)
+	worker := state.Worker{
+		Pane:                   "%1",
+		CodexSessionObservedAt: created.Add(900 * time.Millisecond),
+		TmuxSessionCreatedAt:   created.Add(-time.Minute),
+		UpdatedAt:              created.Add(time.Second),
+	}
+	live := tmux.Pane{ID: "%2", Session: "worker-1", Command: "codex", Active: true}
+	if sessionProfileBindingIsCurrent("worker-1", worker.Pane, live, worker.CodexSessionObservedAt, worker.TmuxSessionCreatedAt, map[string]time.Time{"worker-1": created}) {
+		t.Fatal("binding from a previous tmux session was accepted after name reuse")
+	}
+	worker.Pane = "%2"
+	worker.TmuxSessionCreatedAt = created
+	if !sessionProfileBindingIsCurrent("worker-1", worker.Pane, live, worker.CodexSessionObservedAt, worker.TmuxSessionCreatedAt, map[string]time.Time{"worker-1": created}) {
+		t.Fatal("same-second hook binding for the current pane was rejected")
+	}
+	if sessionBindingIsCurrent("worker-2", created.Add(time.Second), map[string]time.Time{"worker-1": created}) {
+		t.Fatal("binding without an authoritative tmux creation time was accepted")
+	}
+	live.Command = "zsh"
+	if sessionProfileBindingIsCurrent("worker-1", worker.Pane, live, worker.CodexSessionObservedAt, worker.TmuxSessionCreatedAt, map[string]time.Time{"worker-1": created}) {
+		t.Fatal("old Codex profile was accepted while the live pane was a shell")
+	}
+	live.Command = "/opt/homebrew/bin/codex-aarch64-apple-darwin"
+	if !sessionProfileBindingIsCurrent("worker-1", worker.Pane, live, worker.CodexSessionObservedAt, worker.TmuxSessionCreatedAt, map[string]time.Time{"worker-1": created}) {
+		t.Fatal("live Codex pane was rejected")
 	}
 }
 
@@ -156,8 +187,9 @@ func TestGUISnapshotNormalizesEmptyCollections(t *testing.T) {
 		t.Fatal(err)
 	}
 	var decoded struct {
-		TmuxSessions []string `json:"tmux_sessions"`
-		Projects     []struct {
+		TmuxSessions    []string                     `json:"tmux_sessions"`
+		SessionProfiles map[string]guiSessionProfile `json:"session_profiles"`
+		Projects        []struct {
 			WorkerSessions       []string          `json:"worker_sessions"`
 			TaskOrder            []string          `json:"task_order"`
 			HandoffOrder         []string          `json:"handoff_order"`
@@ -170,7 +202,7 @@ func TestGUISnapshotNormalizesEmptyCollections(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.TmuxSessions == nil || len(decoded.Projects) != 1 {
+	if decoded.TmuxSessions == nil || decoded.SessionProfiles == nil || len(decoded.Projects) != 1 {
 		t.Fatalf("snapshot collections were not normalized: %s", data)
 	}
 	if snapshot.SessionAttention == nil {
@@ -179,6 +211,16 @@ func TestGUISnapshotNormalizesEmptyCollections(t *testing.T) {
 	project := decoded.Projects[0]
 	if project.WorkerSessions == nil || project.TaskOrder == nil || project.HandoffOrder == nil || project.GoalTexts == nil || project.GoalTextTruncated == nil || project.HandoffMessages == nil || project.HandoffTextTruncated == nil {
 		t.Fatalf("project collections were not normalized: %s", data)
+	}
+}
+
+func TestGUISessionProfileAlwaysEncodesBothKeys(t *testing.T) {
+	data, err := json.Marshal(guiSessionProfile{Model: "gpt-5.6-luna"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"model":"gpt-5.6-luna","effort":""}` {
+		t.Fatalf("partial profile JSON = %s", data)
 	}
 }
 

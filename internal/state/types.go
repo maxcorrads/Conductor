@@ -17,23 +17,27 @@ const (
 )
 
 type Activity struct {
-	Session          string    `json:"session"`
-	Pane             string    `json:"pane,omitempty"`
-	CodexSessionID   string    `json:"codex_session_id,omitempty"`
-	CWD              string    `json:"cwd,omitempty"`
-	Busy             bool      `json:"busy"`
-	TurnID           string    `json:"turn_id,omitempty"`
-	ReservedDelivery string    `json:"reserved_delivery,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+	Session                string    `json:"session"`
+	Pane                   string    `json:"pane,omitempty"`
+	CodexSessionID         string    `json:"codex_session_id,omitempty"`
+	CodexSessionObservedAt time.Time `json:"codex_session_observed_at,omitempty"`
+	TmuxSessionCreatedAt   time.Time `json:"tmux_session_created_at,omitempty"`
+	CWD                    string    `json:"cwd,omitempty"`
+	Busy                   bool      `json:"busy"`
+	TurnID                 string    `json:"turn_id,omitempty"`
+	ReservedDelivery       string    `json:"reserved_delivery,omitempty"`
+	UpdatedAt              time.Time `json:"updated_at,omitempty"`
 }
 
 type Worker struct {
-	Session        string    `json:"session"`
-	Pane           string    `json:"pane,omitempty"`
-	CodexSessionID string    `json:"codex_session_id,omitempty"`
-	CWD            string    `json:"cwd,omitempty"`
-	Busy           bool      `json:"busy"`
-	UpdatedAt      time.Time `json:"updated_at,omitempty"`
+	Session                string    `json:"session"`
+	Pane                   string    `json:"pane,omitempty"`
+	CodexSessionID         string    `json:"codex_session_id,omitempty"`
+	CodexSessionObservedAt time.Time `json:"codex_session_observed_at,omitempty"`
+	TmuxSessionCreatedAt   time.Time `json:"tmux_session_created_at,omitempty"`
+	CWD                    string    `json:"cwd,omitempty"`
+	Busy                   bool      `json:"busy"`
+	UpdatedAt              time.Time `json:"updated_at,omitempty"`
 }
 
 type Task struct {

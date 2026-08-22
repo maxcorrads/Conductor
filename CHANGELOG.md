@@ -6,6 +6,16 @@ Historical entries use the current **Brain** and **Worker** role terminology.
 Session spellings from releases before 0.3 are described as legacy labels because
 0.3 intentionally replaces that namespace instead of migrating it.
 
+## 0.4.2 — 2026-08-22
+
+### Added
+
+- The generated Brain setup prompt now includes each connected Worker's current
+  Codex model and reasoning effort when Codex reports them. Missing metadata is
+  labeled explicitly instead of falling back to a potentially stale launch
+  selection. Profile bindings are tied to the observed tmux session and pane,
+  and copy/send refresh the metadata fail-closed before using it.
+
 ## 0.4.1 — 2026-08-22
 
 ### Fixed
