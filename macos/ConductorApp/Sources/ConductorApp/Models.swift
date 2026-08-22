@@ -10,8 +10,14 @@ struct ConductorSnapshot: Decodable {
     let tmuxSessions: [String]
     let sessionActivity: [String: Bool]
     let sessionAttention: [String: Bool]
+    let sessionProfiles: [String: SessionProfile]
     let tmuxError: String?
     let projects: [ProjectSnapshot]
+}
+
+struct SessionProfile: Decodable, Hashable {
+    let model: String?
+    let effort: String?
 }
 
 struct TmuxSessionSnapshot: Decodable {
@@ -90,7 +96,8 @@ struct ProjectSnapshot: Decodable, Identifiable {
 
     func brainSetupPrompt(
         connectedSessions: Set<String>,
-        sessionActivity: [String: Bool] = [:]
+        sessionActivity: [String: Bool] = [:],
+        sessionProfiles: [String: SessionProfile] = [:]
     ) -> String {
         let connectedWorkers = workers(
             connectedSessions: connectedSessions,
@@ -119,6 +126,9 @@ struct ProjectSnapshot: Decodable, Identifiable {
                 if !worker.workspace.isEmpty {
                     lines.append("  workspace: \(worker.workspace)")
                 }
+                let profile = sessionProfiles[worker.session]
+                lines.append("  model: \(reportedModel(profile?.model))")
+                lines.append("  reasoning effort: \(reportedEffort(profile?.effort))")
                 lines.append("")
             }
             if lines.last?.isEmpty == true {
@@ -146,6 +156,21 @@ struct ProjectSnapshot: Decodable, Identifiable {
             "- Remain responsible for final decisions, verification, and user communication."
         ]
         return lines.joined(separator: "\n")
+    }
+
+    private func reportedModel(_ value: String?) -> String {
+        guard let value, value.range(
+            of: #"^[A-Za-z0-9._:/-]{1,128}$"#,
+            options: .regularExpression
+        ) != nil else { return "not reported by Codex" }
+        return value
+    }
+
+    private func reportedEffort(_ value: String?) -> String {
+        guard let value, ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].contains(value) else {
+            return "not reported by Codex"
+        }
+        return value
     }
 
     func workers(

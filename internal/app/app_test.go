@@ -22,6 +22,7 @@ type fakeTmux struct {
 	panes   map[string]tmux.Pane
 	sent    []sentPrompt
 	sendErr error
+	created map[string]time.Time
 }
 
 type sentPrompt struct {
@@ -135,6 +136,11 @@ func (f *fakeTmux) SendGoal(target, objective string) error {
 }
 func (f *fakeTmux) Version() (string, error)  { return "tmux fake", nil }
 func (f *fakeTmux) setCurrent(session string) { f.mu.Lock(); f.current = session; f.mu.Unlock() }
+func (f *fakeTmux) SessionCreatedAt() (map[string]time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.created, nil
+}
 func (f *fakeTmux) prompts() []sentPrompt {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -155,6 +161,8 @@ func testApp(t *testing.T) (*App, *fakeTmux, time.Time) {
 		"brain":    {ID: "%1", Session: "brain", Path: "/repo/main", Command: "codex", Active: true},
 		"worker-1": {ID: "%2", Session: "worker-1", Path: "/repo/worktrees/worker-1", Command: "codex", Active: true},
 		"worker-2": {ID: "%3", Session: "worker-2", Path: "/repo/worktrees/worker-2", Command: "codex", Active: true},
+	}, created: map[string]time.Time{
+		"brain": clock.Add(-time.Minute), "worker-1": clock.Add(-time.Minute), "worker-2": clock.Add(-time.Minute),
 	}}
 	store := state.NewStore(paths, cfg.BrainSession)
 	store.Now = func() time.Time { return clock }
@@ -166,6 +174,28 @@ func testApp(t *testing.T) (*App, *fakeTmux, time.Time) {
 		t.Fatal(err)
 	}
 	return a, fake, clock
+}
+
+func TestSessionHookRecordsDedicatedCodexBindingTime(t *testing.T) {
+	a, fake, clock := testApp(t)
+	fake.setCurrent("worker-1")
+	if err := a.HandleHook("session-start", HookInput{
+		SessionID: "worker-thread",
+		CWD:       "/repo/worktrees/worker-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := st.Workers["worker-1"]
+	if worker == nil {
+		t.Fatal("worker hook state was not recorded")
+	}
+	if worker.CodexSessionID != "worker-thread" || !worker.CodexSessionObservedAt.Equal(clock) || !worker.TmuxSessionCreatedAt.Equal(clock.Add(-time.Minute)) {
+		t.Fatalf("worker binding = %+v", worker)
+	}
 }
 
 func TestSendBrainSetupSerializesAgainstHandoffReservation(t *testing.T) {

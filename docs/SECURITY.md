@@ -7,7 +7,8 @@ invokes only:
 
 - the local `tmux` executable;
 - the installed Conductor binary for lifecycle hooks, one-shot delivery, and one delayed in-hook goal reconciliation;
-- optionally `sqlite3` for a compatibility-only local goal-status lookup;
+- optionally `sqlite3` for compatibility-only local goal-status lookup and
+  read-only current model/reasoning metadata used by the Brain setup prompt;
 - `codex --version` and `codex features list` in `doctor`;
 - `codex debug models` when a Brain or Worker launch sheet requests the current
   model catalog, with `--bundled` as the offline fallback.
@@ -15,6 +16,17 @@ invokes only:
 The live model-catalog command can cause the authenticated Codex CLI to refresh
 data over the network. Codex itself continues to use the user's normal
 authenticated CLI subscription/session.
+
+Codex's local SQLite schema is not a stable public API. Profile lookup is
+therefore fail-soft: Conductor selects only the requested thread ids, never
+writes the database, and omits unavailable model or reasoning values rather
+than failing the dashboard or guessing from terminal contents. Model ids and
+reasoning values must also match a conservative one-line allowlist before they
+are included in model-visible setup text. A persisted Codex thread id is used
+only after a hook has observed it in the current tmux session lifetime, which
+prevents a recreated session name from inheriting an older thread's profile.
+The active tmux pane must also still report a Codex command; a shell-only
+session does not inherit the last thread's model metadata.
 
 Codex sandboxing still applies to commands Brain or Worker execute. Depending on the selected permission profile, invoking `conductor goal` can require approval to write the state directory or access the tmux socket. Prefer a narrow permission or a shared temp-backed `CONDUCTOR_HOME`; do not disable the sandbox solely for this tool.
 
